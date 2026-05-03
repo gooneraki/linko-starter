@@ -25,16 +25,13 @@ func main() {
 }
 
 func run(ctx context.Context, cancel context.CancelFunc, httpPort int, dataDir string) int {
-
-	accessFile, err := os.OpenFile("./linko.access.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	var standardLogger = log.New(os.Stderr, "DEBUG: ", log.LstdFlags)
+	accesslog, err := os.OpenFile("linko.access.log", os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
 	if err != nil {
-		log.Printf("failed to open access log: %v", err)
+		standardLogger.Printf("failed to open access log: %v\n", err)
 		return 1
 	}
-	defer accessFile.Close()
-	var accessLogger = log.New(accessFile, "INFO: ", log.LstdFlags)
-
-	var standardLogger = log.New(os.Stderr, "DEBUG: ", log.LstdFlags)
+	accessLogger := log.New(accesslog, "INFO: ", log.LstdFlags)
 
 	st, err := store.New(dataDir, standardLogger)
 	if err != nil {
