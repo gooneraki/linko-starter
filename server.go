@@ -28,7 +28,7 @@ func requestLogger(logger *log.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-func newServer(store store.Store, port int, cancel context.CancelFunc, logger *log.Logger) *server {
+func newServer(store store.Store, port int, logger *log.Logger, cancel context.CancelFunc) *server {
 	mux := http.NewServeMux()
 
 	s := &server{
