@@ -5,7 +5,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -43,7 +42,7 @@ func run(ctx context.Context, cancel context.CancelFunc, httpPort int, dataDir s
 
 	st, err := store.New(dataDir, logger)
 	if err != nil {
-		logger.Info("failed to create store: %v\n", err)
+		logger.Error("failed to create store", "error", err)
 		return 1
 	}
 	s := newServer(*st, httpPort, logger, cancel)
@@ -56,14 +55,14 @@ func run(ctx context.Context, cancel context.CancelFunc, httpPort int, dataDir s
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	logger.Info("Linko is shutting down")
+	logger.Debug("Linko is shutting down")
 
 	if err := s.shutdown(shutdownCtx); err != nil {
-		logger.Error("failed to shutdown server: %v\n", err)
+		logger.Error("failed to shutdown server", "error", err)
 		return 1
 	}
 	if serverErr != nil {
-		logger.Error("server error: %v\n", serverErr)
+		logger.Error("server error", "error", serverErr)
 		return 1
 	}
 	return 0
@@ -71,14 +70,20 @@ func run(ctx context.Context, cancel context.CancelFunc, httpPort int, dataDir s
 
 func initializeLogger(logFile string) (*slog.Logger, closeFunc, error) {
 	if logFile != "" {
-		file, err := os.OpenFile(logFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+		debugHandler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})
 
+		file, err := os.OpenFile(logFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to open log file: %w", err)
 		}
+
 		bufferedFile := bufio.NewWriterSize(file, 8192)
 
-		multiWriter := io.MultiWriter(os.Stderr, bufferedFile)
+		infoHandler := slog.NewTextHandler(bufferedFile, &slog.HandlerOptions{
+			Level: slog.LevelInfo,
+		})
 
 		closeFunc := func() error {
 			if err := bufferedFile.Flush(); err != nil {
@@ -90,8 +95,9 @@ func initializeLogger(logFile string) (*slog.Logger, closeFunc, error) {
 			return nil
 		}
 
-		// return log.New(multiWriter, "", log.LstdFlags), closeFunc, nil
-		return slog.New(slog.NewTextHandler(multiWriter, nil)), closeFunc, nil
+		return slog.New(slog.NewMultiHandler(debugHandler, infoHandler)),
+			closeFunc,
+			nil
 	}
 	return slog.New(slog.NewTextHandler(os.Stderr, nil)), func() error { return nil }, nil
 }
