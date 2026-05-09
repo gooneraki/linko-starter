@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"boot.dev/linko/internal/store"
@@ -78,6 +79,37 @@ func requestID(next http.Handler) http.Handler {
 	})
 }
 
+func redactIP(address string) string {
+	// Split the address and port
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		// If SplitHostPort fails, it might be just a host without port
+		host = address
+	}
+
+	// Parse the IP address
+	ip := net.ParseIP(host)
+	if ip == nil {
+		// Not a valid IP, return unchanged
+		return address
+	}
+
+	// Check if it's IPv4
+	if ip.To4() == nil {
+		// Not IPv4, return unchanged
+		return address
+	}
+
+	// IPv4 address - replace last octet with x
+	parts := strings.Split(host, ".")
+	if len(parts) == 4 {
+		parts[3] = "x"
+		return strings.Join(parts, ".")
+	}
+
+	return address
+}
+
 func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -97,7 +129,7 @@ func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 			attrs := []any{
 				slog.String("method", r.Method),
 				slog.String("path", r.URL.Path),
-				slog.String("client_ip", r.RemoteAddr),
+				slog.String("client_ip", redactIP(r.RemoteAddr)),
 				slog.Duration("duration", time.Since(start)),
 				slog.Int("request_body_bytes", spyReader.bytesRead),
 				slog.Int("response_status", spyWriter.statusCode),
