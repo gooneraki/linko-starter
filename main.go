@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -15,7 +14,10 @@ import (
 	"boot.dev/linko/internal/build"
 	"boot.dev/linko/internal/linkoerr"
 	"boot.dev/linko/internal/store"
+	"github.com/lmittmann/tint"
+	"github.com/mattn/go-isatty"
 	pkgerr "github.com/pkg/errors"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 type closeFunc func() error
@@ -99,33 +101,32 @@ func initializeLogger(logFile string) (*slog.Logger, closeFunc, error) {
 			ReplaceAttr: replaceAttr,
 		})
 
-		file, err := os.OpenFile(logFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to open log file: %w", err)
+		logger := &lumberjack.Logger{
+			Filename:   logFile,
+			MaxSize:    1,
+			MaxAge:     28,
+			MaxBackups: 10,
+			LocalTime:  false,
+			Compress:   true,
 		}
 
-		bufferedFile := bufio.NewWriterSize(file, 8192)
-
-		infoHandler := slog.NewJSONHandler(bufferedFile, &slog.HandlerOptions{
+		infoHandler := slog.NewJSONHandler(logger, &slog.HandlerOptions{
 			Level:       slog.LevelInfo,
 			ReplaceAttr: replaceAttr,
 		})
 
 		closeFunc := func() error {
-			if err := bufferedFile.Flush(); err != nil {
-				return fmt.Errorf("failed to flush log buffer: %w", err)
-			}
-			if err := file.Close(); err != nil {
-				return fmt.Errorf("failed to close log file: %w", err)
-			}
-			return nil
+			return logger.Close()
 		}
 
 		return slog.New(slog.NewMultiHandler(debugHandler, infoHandler)),
 			closeFunc,
 			nil
 	}
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{ReplaceAttr: replaceAttr})), func() error { return nil }, nil
+	return slog.New(tint.NewHandler(os.Stderr, &tint.Options{
+		ReplaceAttr: replaceAttr,
+		NoColor:     !isatty.IsTerminal(os.Stderr.Fd()) && !isatty.IsCygwinTerminal(os.Stderr.Fd()),
+	})), func() error { return nil }, nil
 }
 
 func replaceAttr(_ []string, a slog.Attr) slog.Attr {
