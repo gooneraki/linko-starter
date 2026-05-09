@@ -59,7 +59,12 @@ func httpError(ctx context.Context, w http.ResponseWriter, status int, err error
 			logCtx.Error = err
 		}
 	}
-	http.Error(w, err.Error(), status)
+	// For sensitive status codes, return generic message
+	if status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusInternalServerError {
+		http.Error(w, http.StatusText(status), status)
+	} else {
+		http.Error(w, err.Error(), status)
+	}
 }
 
 func requestID(next http.Handler) http.Handler {
