@@ -6,8 +6,11 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
+	"slices"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,6 +22,8 @@ import (
 	pkgerr "github.com/pkg/errors"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
+
+var sensitiveKeys = []string{"password", "key", "apikey", "secret", "pin", "creditcardno", "user"}
 
 type closeFunc func() error
 
@@ -148,7 +153,36 @@ func replaceAttr(_ []string, a slog.Attr) slog.Attr {
 		}
 		return slog.GroupAttrs("error", errorAttrs(err)...)
 	}
+
+	// Last-resort safety net: redact known-sensitive keys.
+	if slices.Contains(sensitiveKeys, a.Key) {
+		return slog.String(a.Key, "[REDACTED]")
+	}
+
+	// Last-resort safety net: redact passwords embedded in URL values.
+	if a.Value.Kind() == slog.KindString {
+		if redacted, ok := redactURLPassword(a.Value.String()); ok {
+			return slog.String(a.Key, redacted)
+		}
+	}
+
 	return a
+}
+
+// redactURLPassword parses s as a URL and, if it contains an embedded
+// password, returns a copy of s with the password replaced by [REDACTED].
+func redactURLPassword(s string) (string, bool) {
+	u, err := url.Parse(s)
+	if err != nil || u.User == nil {
+		return "", false
+	}
+	password, hasPassword := u.User.Password()
+	if !hasPassword {
+		return "", false
+	}
+	// Replace just the password substring so the rest of the URL is left
+	// exactly as it appeared, rather than percent-re-encoding the whole URL.
+	return strings.Replace(s, password, "[REDACTED]", 1), true
 }
 
 func errorAttrs(err error) []slog.Attr {
