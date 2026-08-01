@@ -10,10 +10,13 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"boot.dev/linko/internal/store"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -27,6 +30,16 @@ type server struct {
 type spyReadCloser struct {
 	io.ReadCloser
 	bytesRead int
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
 }
 
 func (r *spyReadCloser) Read(p []byte) (int, error) {
@@ -159,7 +172,7 @@ func newServer(store store.Store, port int, logger *slog.Logger, cancel context.
 
 	s.httpServer = &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
-		Handler: requestID(requestLogger(s.logger)(mux)),
+		Handler: requestID(requestLogger(s.logger)(metricsMiddleware(mux))),
 	}
 
 	mux.HandleFunc("GET /", s.handlerIndex)
@@ -200,4 +213,32 @@ func (s *server) handlerShutdown(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	go s.cancel()
+}
+
+// httpRequestsTotal counts requests by method, path and status.
+var httpRequestsTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "http_requests_total",
+		Help: "Total number of HTTP requests.",
+	},
+	[]string{"method", "path", "status"},
+)
+
+func metricsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := &statusRecorder{
+			ResponseWriter: w,
+			status:         http.StatusOK,
+		}
+
+		next.ServeHTTP(rec, r)
+
+		path := r.URL.Path
+		method := r.Method
+		status := strconv.Itoa(rec.status)
+
+		httpRequestsTotal.
+			WithLabelValues(method, path, status).
+			Inc()
+	})
 }
