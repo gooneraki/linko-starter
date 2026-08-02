@@ -3,4 +3,6 @@ linko
 *~
 vendor/
 *.log
-*.log.gz
+*.gz
+*.txt
+*.prof

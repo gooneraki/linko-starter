@@ -2818,6 +2818,105 @@ go run .
 Run and submit the CLI tests from the root of the Linko repo.
 
 L3: CPU Profiling
+CPU Profiling
+Let's look at what pprof data looks like.
+
+As already discussed, pprof exposes profiles via HTTP. While your application is running, you can download a CPU profile by making a request with curl:
+
+curl -u username:password http://localhost:XXXX/debug/pprof/profile?seconds=30 --output cpu.prof
+
+This command tells the profiler to collect 30 seconds' worth of runtime data, then write it to the response. So while it's running, we need the application to have something to do so that it can gather data. In the case of a web application, that means making "business-as-usual" requests during the 30-second window.
+
+When it's done, curl stores the data in a binary file called cpu.prof for us to analyze later.
+
+Go Tool pprof
+One of the most basic tools for analysis is go tool pprof. It gives you an interactive shell-style environment for interacting with a profile. To invoke it:
+
+go tool pprof path/to/linko/binary cpu.prof
+
+This should show you something like this:
+
+File: linko
+Build ID: 3f3d7eb7f71915ae65068106400a3b4ed73a7911
+Type: cpu
+Time: 2025-12-09 09:24:56 EST
+Duration: 30.02s, Total samples = 10ms (0.033%)
+Entering interactive mode (type "help" for commands, "o" for options)
+
+To see which functions used the most CPU, type top and press Enter:
+
+Showing nodes accounting for 10ms, 100% of 10ms total
+      flat  flat%   sum%        cum   cum%
+      10ms   100%   100%       10ms   100%  runtime.typePointers.next
+         0     0%   100%       10ms   100%  runtime.gcBgMarkWorker
+         0     0%   100%       10ms   100%  runtime.gcBgMarkWorker.func2
+         0     0%   100%       10ms   100%  runtime.gcDrain
+         0     0%   100%       10ms   100%  runtime.gcDrainMarkWorkerDedicated (inline)
+         0     0%   100%       10ms   100%  runtime.scanobject
+         0     0%   100%       10ms   100%  runtime.systemstack
+
+This lists the top CPU-consuming functions during that time period.
+
+Web UI
+The text-based top view is great for seeing which functions are "hot", but it doesn't show relationships between functions. The same cpu.prof file can also be explored using a web interface that shows a directed graph of function calls:
+
+pprof graph view
+
+Each node represents a function, sized by CPU time. Edges show call relationships, with labels indicating how many samples include that call. This is the syntax:
+
+go tool pprof -http=:8897 linko cpu.prof
+
+It will print a URL – open it in your browser, then select "View" -> "Graph".
+
+Assignment
+Linko's redirect endpoint is slower than it should be. Use CPU profiling to diagnose why.
+
+Rebuild the Linko binary and run it:
+
+go build -o linko . && ./linko
+
+Create a spamredirect.sh helper script in your Linko directory:
+
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+iterations=$1
+
+mkdir -p data
+printf 'http://localhost:8899' > data/ABCDEF
+
+for ((i = 1; i <= iterations; i++)); do
+  curl -sS "http://localhost:8899/ABCDEF" > /dev/null
+  if (( i % 100 == 0 )); then
+    echo "Completed $i requests"
+  fi
+done
+
+Start a 30-second CPU profile while Linko is running, and write it to cpu.prof:
+
+curl -u frodo:ofTheNineFingers "http://localhost:8899/debug/pprof/profile?seconds=30" --output cpu.prof
+
+While the profiler is collecting, run the spamredirect.sh script in another terminal to generate traffic:
+
+./spamredirect.sh 200
+
+After the profile finishes, open it in go tool pprof, run top, and identify the expensive function causing the slowdown. Did you figure it out? I'll ask you about it in the next lesson.
+
+go tool pprof linko cpu.prof
+
+Exit the interactive command with exit.
+
+Run the profile one more time, but this time save top output directly to cpu.pprof.txt:
+
+go tool pprof -top "http://frodo:ofTheNineFingers@localhost:8899/debug/pprof/profile?seconds=30" > cpu.pprof.txt
+
+Again, while the profiler is collecting, run the spamredirect.sh script in another terminal to generate traffic:
+
+./spamredirect.sh 200
+
+When the profiler is done, run and submit the CLI tests from the root of the Linko repo.
+
 L4: CPU Profiling Quiz
 L5: Memory Profiling
 L6: Memory Profiling Quiz
