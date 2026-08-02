@@ -6,7 +6,7 @@ services:
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
     extra_hosts:
-      - "host.docker.internal:172.28.194.214"
+      - "host.docker.internal:172.20.222.91"
 
   node-exporter:
     image: prom/node-exporter:latest
