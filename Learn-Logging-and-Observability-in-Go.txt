@@ -1,0 +1,2701 @@
+
+Title: Learn Logging and Observability in Go
+Subtitle: Add the logs, metrics, traces, and alerts you'll wish you had when production catches fire.
+Author: Jonathan Hall
+Contributor: Boot.dev Team
+Updated: July/2026
+url: https://www.boot.dev/courses/learn-logging-observability-golang
+
+CH1: Observability
+L1: Welcome to Logging and Telemetry
+Welcome to Logging and Telemetry
+By now you've built a web service (or seven). You've added features, fixed bugs, and felt the thrill of seeing your code in action.
+
+But sometimes... things break.
+
+Servers crash. Users trigger weird edge cases. Bugs sneak through. The difference between junior and senior engineers isn't avoiding failure, it's building systems that handle and detect failure gracefully. In this course, we'll answer two seemingly simple questions:
+
+"How do I know when something is going wrong?"
+"How can I identify the problem as quickly as possible?"
+for Windows Users
+If you try to complete this course without WSL 2 installed on Windows, you're gonna have a bad time.
+
+Learning Goals
+Understand observability – what it is, and how it can help you
+Effective logging using Go's log and log/slog packages
+Avoid common traps, including missed logs, too many logs, and security leaks
+Set up actionable alerts without creating noise
+Collect and visualize metrics with Prometheus and Grafana
+Trace requests and diagnose performance with pprof and OpenTelemetry
+Boot.dev CLI
+Throughout this course, you'll be using the Boot.dev CLI to run our tests (which are just CLI commands) against your local environment. Install it now if you don't already have it. All the instructions and troubleshooting info are on the GitHub page.
+
+Make sure the Boot.dev CLI install worked:
+
+bootdev --version
+
+If you're stuck, reach out in the help forums of the Discord.
+
+Once the bootdev command is working, log in and follow the instructions:
+
+bootdev login
+
+Run vs. Submit
+Lessons have a series of commands that run on your local machine, and tests that are checked against the results of those commands. There are two ways to run the CLI tests – run and submit:
+
+bootdev run <id>: This will run the commands and show you the results. It's useful for debugging, but it won't tell you explicitly whether or not you've passed the tests.
+bootdev run <id> -s: This will run the commands and give you pass/fail feedback. It will also mark the lesson as complete on the website. If you get something wrong, however, you could lose your sharpshooter spree, so be sure to use run first!
+You can copy the run/submit commands with the lesson ID ready-to-go from the test panel.
+
+Assignment
+Complete your first CLI check.
+
+Run the lesson's run command from the test panel.
+Make sure it prints: Wait, it's just standard out? Always has been.
+Run and submit the CLI tests.
+
+L2: Linko Overview
+Linko Overview
+Throughout this course, we'll add logging and observability to "Linko," a simple URL-shortening service. Link shorteners are common on the web: they let users take a long, nasty-looking URL full of query parameters like:
+
+https://www.boot.dev/courses/learn-logging?utm_source=google&utm_medium=cpc&utm_campaign=learn-logging-course
+
+And host a short URL that simply redirects to the long URL:
+
+https://linko.com/bootdev
+
+Here's the catch: Linko has already been written for you. Your goal throughout this course will be to add observability to the service.
+
+Assignment
+Get Linko running locally.
+
+Clone the Linko starter repo from GitHub onto your local machine.
+git clone https://github.com/bootdotdev/linko-starter.git
+
+Run the service locally.
+cd linko-starter
+go run .
+
+Open http://localhost:8899 in your browser and make sure the Linko homepage loads.
+There are a few strange bits of code in the Linko starter repo that you may be tempted to "fix." Don't! They're intentional bugs and oddities that we'll be using good observability to find and diagnose!
+
+With Linko running, run and submit the CLI tests from the root of your cloned repo.
+
+L3: What Is Observability?
+What Is Observability?
+Observability is the ability to understand what a system is doing, usually with logs, metrics, and traces. With good observability in place, you can quickly tell whether a system is healthy, and when it's not, identify the cause so you can fix it.
+
+There are several primary tools that most professional teams use to achieve good observability in production:
+
+Logs: Event records from your system. Each log usually includes a timestamp, a severity ("ERROR", "INFO", etc.), and a message.
+Metrics: Aggregate measurements over time, like request count, error rate, and latency.
+Traces: Per-request execution paths (often across services) that show where time is spent and where failures happen.
+Alerts: Notifications sent when an important signal crosses a threshold (for example, an error-rate spike).
+Assignment
+Add basic lifecycle logs so Linko tells you when it starts and shuts down.
+
+When the server starts, print the following message to the console, where %d is the port number:
+Linko is running on http://localhost:%d
+
+If you need guidance getting the port number, check the Tips section.
+
+When the server shuts down (before it exits), print:
+Linko is shutting down
+
+Start your server and redirect its output to a temporary log file:
+go run . 2>&1 | sh -c 'trap "" INT; tee linko.out.log'
+
+Press Ctrl-C to trigger shutdown, and make sure both messages appear in linko.out.log.
+Start the server again before running the CLI tests.
+There will be lessons, including this one, where the CLI tests intentionally trigger the Linko server to shut down. In that case, remember to restart it between running and submitting the tests.
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+Tips
+In start, ln is the listener returned by net.Listen. Since ln.Addr() returns a net.Addr interface, type assert it to *net.TCPAddr before reading its Port.
+
+CH2: Logging
+L1: Logging in Go
+Logging in Go
+The Go standard library has a built-in log package that we can use to produce messages with timestamps and other metadata, for example:
+
+fmt.Println("This is a non-log message")
+// This is a non-log message
+
+log.Println("This is a log message")
+// 2023/10/01 12:00:00 This is a log message
+
+You might think, "why do I need a whole package for that? Can't I just use fmt.Println with a timestamp?" And... yes, you can. But there are some really great things about using a logging package! For example:
+
+You can easily change where the logs go (e.g., to a file, to STDERR, or to a third-party service).
+Timestamp functionality and other metadata management is built-in
+Fatal errors can automatically exit the program (e.g. log.Fatal)
+Most loggers provide fine-grained control over which logs to emit with log levels (e.g., INFO, DEBUG, ERROR).
+Avoid fmt.Println or fmt.Fprint (and related functions) for logging in services! They're good for doing "normal" stdout-type stuff in CLI tools, but they're not purpose-built for logging.
+
+Admittedly, the base log package in Go is pretty bare-bones, but don't worry we'll cover the more advanced log/slog in a later chapter.
+
+What About Syslog?
+There's also a log/syslog package, which is meant to send logs to the system's syslog service... but I'd advise against that in almost all cases. It's considered a bit of a wart, even by the Go team.
+
+If you're targeting syslog, you're probably better off just using a syslog adapter for the slog package like slog-syslog.
+
+Assignment
+Switch Linko's app logs from fmt to the log package.
+
+In main.go, auth.go, server.go, and handlers.go, replace fmt-based logging calls with log package calls.
+Replace fmt.Println with log.Println.
+Replace fmt.Printf and fmt.Fprintf(os.Stderr, ...) with log.Printf.
+Omit \n when using log.Printf (or slog). Both automatically append a newline.
+
+Start your server and redirect its output to a temporary log file:
+go run . 2>&1 | sh -c 'trap "" INT; tee linko.out.log'
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+L2: Use the Logger
+Use the Logger
+So log.Printf seems to work well... but there's a better way!
+
+A "logger" is an instance of a log.Logger that can be used to produce logs. Generally it's better to use a logger object than the log package's functions directly, for a few reasons:
+
+You can easily change where the logs go, all in one place
+You can add prefixes to the logs, again all in one place
+You can change where the logs go at runtime, again... all in one place
+Using STDERR
+It's usually best to send logs to os.Stderr instead of os.Stdout because STDOUT is typically used for the main output of a program, and we don't want to gum that up with logs meant for developers.
+
+When you create a new logger with log.New, you can specify the output destination, and os.Stderr is usually the right choice.
+
+// create a logger
+var logger = log.New(os.Stderr, "MESSAGE: ", log.LstdFlags)
+
+// use a logger
+logger.Printf("The Lisan al-Gaib arrived")
+// MESSAGE: 2024/06/01 12:00:00 The Lisan al-Gaib arrived
+
+os.Stderr is the standard error output stream
+The second argument is a prefix for the log messages (here we're using "MESSAGE: ")
+The third argument is the log flags, which can include things like timestamps, file names, and line numbers. log.LstdFlags simply includes the date and time.
+Enforcing Loggers
+If you find yourself forgetting to use a logger, the golangci-lint linter comes with a sublinter called forbidigo that can be configured to prohibit the use of these functions:
+
+version: "2"
+
+linters:
+  settings:
+    forbidigo:
+      forbid:
+        - pattern: ^fmt\.Print.*$
+          msg: Use logger instead.
+      analyze-types: true
+
+This is totally optional of course, but it's nice to know about.
+
+Assignment
+Move from package-level log calls to a shared logger instance.
+
+Create a global logger in main.go. It should use os.Stderr, have a DEBUG: (with space) prefix, and use the standard log flags.
+In main.go, server.go, handlers.go, and auth.go update all calls to log.X functions to instead use the global logger.
+Start your server and redirect its output to a temporary log file:
+go run . 2>&1 | sh -c 'trap "" INT; tee linko.out.log'
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+L3: Logging Requests
+Logging Requests
+It's very common to log requests in a web service. One of the cleaner ways to implement this is with a middleware function that logs the request after it's been served:
+
+func requestLogger(logger *log.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r)
+			logger.Printf("Wake up babe, a new %s request to %s just dropped", r.Method, r.URL.Path)
+		})
+	}
+}
+
+This one simply logs the request method and path after the request has been served. Notice that it takes a *log.Logger as an argument, allowing you to use any logger you want on a per-handler basis. So, instead of declaring a handler that we want to log like this:
+
+mux.HandleFunc("POST /api/shorten", apiCfg.handlerShortenURL)
+
+We can use middleware:
+
+mux.Handle("/api/shorten", requestLogger(logger)(http.HandlerFunc(apiCfg.handlerShortenURL)))
+
+Alternatively, we can wrap the entire mux with the middleware, so that all requests are logged:
+
+srv = &http.Server{
+	Addr:    fmt.Sprintf(":%d", port),
+	Handler: requestLogger(logger)(mux),
+}
+
+Assignment
+Log each served request with middleware.
+
+Implement the requestLogger middleware shown above, and update its log output to use this format:
+Served request: METHOD Path
+
+Where METHOD is the HTTP method of the request, and Path is the path of the request. For example:
+Served request: GET /
+
+Start your server and redirect its output to a temporary log file:
+go run . 2>&1 | sh -c 'trap "" INT; tee linko.out.log'
+
+Manually load the Linko homepage in your browser. You should see the log message in your terminal output.
+Run and submit the CLI tests from the root of the Linko repo.
+
+L4: Global Logger vs. Dependency Injection
+Global Logger vs. Dependency Injection
+Notice that our requestLogger middleware accepts a *log.Logger as a parameter:
+
+func requestLogger(logger *log.Logger) func(next http.Handler) http.Handler
+
+But why not just keep using the global logger we already declared everywhere? Wouldn't that be simpler? On the surface, perhaps.
+
+But globals are generally a bad idea because they make testing and debugging more difficult... and a global logger is no exception!
+
+Using Dependency Injection
+Dependency injection (DI) is a really fancy term for a really simple idea: pass a function or method's dependencies in as arguments. Generally it makes testing much easier, because you don't need to continuously mutate shared state.
+
+By passing the logger object as an argument to our middleware function, we can avoid these problems. It also means we can pass a distinct logger object for each test, and even run tests in parallel without worrying about global state.
+
+So, non-global loggers are great because:
+
+It's easy to use different loggers in different parts of your app if you'd like
+You can more easily pass context information to the logger as needed
+There's no global state to worry about when you're writing unit tests that use the logger
+Assignment
+Replace the global logger with injected loggers.
+
+Add a logger field to the server struct, update newServer to accept and set the logger, and update server logging to use it.
+Add a logger field to the Store, update store.New to accept a logger, and use the injected logger in the store package.
+Create two non-global loggers in run:
+An "access" logger that writes to a file named linko.access.log with an INFO: prefix.
+A "standard" logger that writes to STDERR with a DEBUG: prefix.
+Use the access logger for server/request logs, and use the standard logger for your Store and shutdown messages.
+Remove the old global logger.
+Restart your server:
+
+go run .
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+L5: Logger Configuration
+Logger Configuration
+It's more standard to decide what goes to STDERR and what goes to a file based on the environment your application is running in, rather than on separate loggers. Common environments are:
+
+"development" (local development, like when you're running the application on your own machine)
+"staging" (a pre-production environment that mimics production)
+"production" (the live environment that users interact with)
+Multiwriter Configuration
+There's no reason a logger can't write to both STDERR and a file at the same time! The io.MultiWriter function takes multiple io.Writer objects and returns a single io.Writer that writes to all of them. For example:
+
+file, err := os.OpenFile(logFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+if err != nil {
+	log.Fatalf("failed to open log file: %v", err)
+}
+multiWriter := io.MultiWriter(os.Stderr, file)
+logger := log.New(multiWriter, "INFO: ", log.LstdFlags)
+
+Assignment
+Use one logger that changes output based on LINKO_LOG_FILE.
+
+Assume that in production, Linko has a LINKO_LOG_FILE environment variable set. In local development and staging, it is not set.
+
+If LINKO_LOG_FILE is set, the logger should write to both the file and STDERR. Otherwise, it should only write to STDERR.
+
+Add an initializeLogger helper. If LINKO_LOG_FILE is set, it should create a logger that writes to both the file and STDERR, otherwise, it should create one that only writes to STDERR.
+Use this logger for all logging in the application, removing the old loggers entirely.
+Remove both the DEBUG: and the INFO: prefixes from the logger.
+Restart your server, setting the LINKO_LOG_FILE environment variable so the tests can verify the file is created:
+
+LINKO_LOG_FILE=linko.access.log go run .
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+L6: Logger Failure
+Logger Failure
+Here's the code I used to create Linko's logger:
+
+func initializeLogger(logFile string) (*log.Logger, error) {
+	if logFile != "" {
+		file, err := os.OpenFile(logFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open log file: %w", err)
+		}
+		multiWriter := io.MultiWriter(os.Stderr, file)
+		return log.New(multiWriter, "", log.LstdFlags), nil
+	}
+	return log.New(os.Stderr, "", log.LstdFlags), nil
+}
+
+func run(ctx context.Context, httpPort int, dataDir string) int {
+	logger, err := initializeLogger(os.Getenv("LINKO_LOG_FILE"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to initialize logger: %v\n", err)
+		return 1
+	}
+	// ...
+}
+
+Notice that if an error occurs when opening the file, I return an error from initializeLogger, and then in run() I write a message to os.Stderr and return a non-zero exit code. If you used log.Fatal or log.Panic instead, you might have a couple of problems in your code that would:
+
+Make it impossible (or very difficult) to test that behavior in a unit test.
+Prevent the program from running any deferred functions or doing other cleanup.
+If you ask me, log.Fatal and log.Panic should be avoided... I don't even like that they're in the standard library, because they couple logging with control flow – but that's a different discussion.
+
+Instead, I prefer to let the caller of the initializeLogger function decide how to behave in the event of a failure! Then, when it's time to handle the error (in the run function), this is one of the few times it's okay to log without a logger (by using fmt.Fprintf) because it was the logger itself that failed to initialize!
+
+L7: Buffered Logging
+Buffered Logging
+Our current logger, especially when writing to a file, is relatively slow. Every time we log a message, it writes to disk, no matter how large or small the message is. That's potentially a lot of disk I/O, and it can really slow down our entire application because many small writes are much slower than a few large writes.
+
+Observability being the reason our app is slow is, frankly, embarrassing.
+
+One solution is to use a buffered writer like bufio.Writer around the file. This allows us to write log messages to an in-memory buffer, and then that buffer is only written to disk when it's full.
+
+bufferedFile := bufio.NewWriterSize(file, 1024)
+
+Assignment
+Buffer file logging writes.
+
+In initializeLogger, wrap the file writer with bufio.NewWriterSize using an 8192 byte buffer.
+Keep non-file logging behavior the same.
+Restart your server with LINKO_LOG_FILE=linko.access.log set:
+LINKO_LOG_FILE=linko.access.log go run .
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+If you create the buffered logger the way I did, it will introduce a subtle bug... but don't worry we'll fix it later!
+
+L8: Logger Cleanup
+Logger Cleanup
+The buffered writer is faster, but we added a bug! It must be flushed (written to disk) before the program exits, or any pending log messages will be lost!
+
+It's also common to log messages across the network in some scenarios, and those kinds of loggers will also need to be flushed before exit – so we should take that into account in our implementation.
+
+Assignment
+Clean up logger resources before exit.
+
+As you create your logger, also create a "close" function that cleans up any logger resources.
+
+For the file logger, that close function should .Flush the buffered writer and .Close the file. One valid signature is:
+
+type closeFunc func() error
+
+func initializeLogger(logFile string) (*log.Logger, closeFunc, error)
+
+For the STDERR logger, return a no-op close function that returns nil.
+
+Call the close function before Linko exits. Don't defer it directly (you'd lose the returned error). Instead, defer a wrapper that calls it and prints any cleanup error to STDERR.
+
+Once again, we resort to writing directly to os.Stderr – the logger isn't in a usable state at this point.
+
+Start your server with LINKO_LOG_FILE=linko.access.log set:
+
+LINKO_LOG_FILE=linko.access.log go run .
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+CH3: Structured Logging
+L1: Structured Logging
+Structured Logging
+Up to now we've been logging messages as raw strings, with metadata strewn inconsistently throughout each message. If you've ever tried to debug an application that uses such sloppy logs, you've probably hit these limitations:
+
+Readability: Raw strings are hard to read, especially when they include compact JSON or XML.
+Aggregation: Plain-old strings lack a known structure, which makes them hard to aggregate across event types.
+Searchability: Raw strings are hard to search, making it difficult to find specific patterns.
+Structured logging solves these problems.
+
+"Structured logging" doesn't refer to one specific shape of log entry. It means using some consistent structure, typically key-value pairs. Say we have this raw unstructured log:
+
+User 9284 failed to login at 2024-10-01T12:34:56Z from IP address 102.32.21.192
+
+Instead, let's use a structured log with key-value pairs. In Go, that's typically done with log/slog:
+
+slog.Error("login failed",
+	"user_id", 9284,
+	"timestamp", "2024-10-01T12:34:56Z",
+	"ip_address", "102.32.21.192")
+
+It produces an entry that can be serialized to text:
+
+time=2024-10-01T12:34:56Z level=ERROR msg="login failed" user_id=9284 timestamp=2024-10-01T12:34:56Z ip_address=102.32.21.192
+
+Or to a structured object for storage in a log aggregation system:
+
+{
+  "time": "2024-10-01T12:34:56Z",
+  "level": "ERROR",
+  "msg": "login failed",
+  "user_id": 9284,
+  "timestamp": "2024-10-01T12:34:56Z",
+  "ip_address": "102.32.21.192"
+}
+
+Click to hide video
+
+L2: Slog Package
+Slog Package
+In Go 1.21 (June 2023), the log/slog package was added to the standard library to support structured logging. There was much rejoicing.
+
+There are several third-party logging libraries, like:
+
+logrus
+zerolog
+zap
+Most predate log/slog, and unless you have very specific needs, log/slog is probably all you need these days. Compare a standard log message:
+
+2023/10/01 12:00:00 This is a log message
+
+To a structured log/slog message:
+
+2024-01-15T10:30:45.123Z INFO msg="user login successful" user_id=12345 username=john_doe ip_address=192.168.1.100 duration_ms=245
+
+Handlers
+The log/slog package introduces handlers, which accept arbitrary key-value pairs and format them into a log record. Two built-in handlers are:
+
+log/slog.NewTextHandler: Formats logs as plain text
+log/slog.NewJSONHandler: Formats logs as JSON.
+Initialization
+The log/slog.New function takes a handler as an argument, and returns a logger instance that can be used to log messages:
+
+logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+Then we can use it like this:
+
+logger.Info("This is an info message")
+
+The structured logger doesn't support formatting methods like Infof, so use fmt.Sprintf when needed:
+
+logger.Info(fmt.Sprintf("Failed to open file %s: %s", filename, err))
+
+Assignment
+Switch Linko to structured logging with slog.
+
+Update your logger type to *slog.Logger, using slog.NewTextHandler. You can use nil handler options for now.
+Update the rest of the app to use the new logger type. Replace existing Print/Printf calls with Info calls.
+Use fmt.Sprintf to format strings as needed. slog doesn't have Infof or similar methods.
+
+Make sure all packages compile.
+Restart your server:
+
+go run .
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+L3: Log Levels
+Log Levels
+Log levels aren't specific to structured logging, but log/slog provides a built-in way to handle them. They're a convention for labeling each log with a severity. The standard library defines four levels by default, and you can define custom levels if needed:
+
+slog.LevelError: Error messages, indicating failures or issues that need attention.
+slog.LevelWarn: Warning messages, indicating potential issues that are not critical.
+slog.LevelInfo: Informational messages, typically used for general application events.
+slog.LevelDebug: Debug messages, useful for development and debugging.
+You'll usually only need these four.
+
+I don't even use Warn messages very often if truth be told...
+
+Filtering
+Have you ever added print statements while debugging? Sometimes you need that same visibility in production because you can't reproduce the issue locally. You still don't want to flood your normal logs with extra noise, so you use Debug. Then if something else goes wrong, you can filter debug logs out or send them elsewhere. For example, you can use different handlers with different minimum levels:
+
+// logs DEBUG and above
+debugLogger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+	Level: slog.LevelDebug,
+}))
+
+// logs ERROR and above
+errorLogger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+	Level: slog.LevelError,
+}))
+
+Combining Loggers
+A more practical approach is a single logger that routes logs to different destinations by level. For example, everything goes to STDERR, but only INFO and higher go to a file. As of Go 1.26, this is easy with slog.NewMultiHandler:
+
+debugHandler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+	Level: slog.LevelDebug,
+})
+
+logFile, err := os.OpenFile("linko.access.log", os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+if err != nil {
+	return err
+}
+defer logFile.Close()
+infoHandler := slog.NewTextHandler(logFile, &slog.HandlerOptions{
+	Level: slog.LevelInfo,
+})
+
+logger := slog.New(slog.NewMultiHandler(
+	debugHandler,
+	infoHandler,
+))
+
+Assignment
+Split logs by severity, but keep one app-wide logger.
+
+Use slog.Handlers to configure your STDERR logs to include DEBUG and above, and your file logs to include INFO and above.
+Use slog.NewMultiHandler to combine both handlers into one logger used throughout the app.
+Update the startup and shutdown messages to be logged at the DEBUG level.
+Update any error-condition logs (e.g. "failed to create store") to use the Error level.
+Start your server with LINKO_LOG_FILE=linko.access.log set:
+
+LINKO_LOG_FILE=linko.access.log go run . 2>&1 | sh -c 'trap "" INT; tee linko.out.log'
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+L4: More Log Levels
+More Log Levels
+I previously mentioned the conventional 4 log levels:
+
+Debug
+Info
+Warn
+Error
+Many projects use even more levels like TRACE, FATAL, or PANIC, but as I already mentioned... I'd avoid them. Let's go a bit deeper on each level.
+
+Debug
+Use Debug for detailed information that's useful for debugging, but not necessary for normal operation. Storing Debug logs can be expensive and noisy, so it's common to disable them in production and keep them enabled locally.
+
+You can almost think of Debug logs as permanent "print debugging" statements.
+
+Sometimes I even throw them in during local development, and delete them before committing if they're super ad-hoc.
+
+Info
+Info level logs are used to record important events that are not errors. For example:
+
+"User 'alice' logged in"
+"File 'config.json' loaded successfully"
+"Server started on port 8080"
+They're useful for understanding normal system behavior, and can help identify trends over time. In many cases, Info logs can be replaced with aggregated metrics – more on that later.
+
+Warn
+Whoops. Did I go out of order? Yes.. but intentionally!
+
+Warn is the level between Info and Error, so when should you use it?
+
+To be blunt: I think you shouldn't!
+
+It's a weird gray area between Info and Error, and in my experience, if it's not an actual error, it should usually be demoted to Info. Here's how I think about it:
+
+Does the message represent any sort of potential bug? Error.
+Does the message need to make its way to the user? Send a 400 and use Info.
+Will the issue resolve itself? Don't even log it.
+Error
+Error level logs record... errors. Obviously.
+
+They should include enough information to diagnose the problem. Things like:
+
+The error message
+A stack trace
+Context (user, permissions, external API)
+System errors and user errors are not the same. A request for a non-existent resource should return a 404 Not Found – but the system didn't fail.
+
+System errors (in general, that corresponds to 5XX codes in web-speak) should be logged as Error level logs. User errors (4XX codes) should be logged as Debug or Info level logs or not logged at all.
+
+L5: Key-Value Pairs
+
+Key-Value Pairs
+Okay, time to finally put the structure in structured logging!
+
+Some logs, like startup and shutdown messages, don't need additional metadata... but some do. Common examples in web services are:
+
+HTTP response code
+Size of request/response bodies
+Duration of the request
+User ID making the request
+Stack traces in the event of failure
+All we need to do is add key-value pairs to the log line, for example:
+
+logger.Info("Someone is loose in the server room",
+	slog.String("name", "Boots"),
+	slog.Int("id", 80045),
+)
+// 2024-01-15T10:30:45.123Z INFO msg="Someone is loose in the server room" name=Boots id=80045
+
+You can use type-specific helpers like slog.String and slog.Int, or log values directly. Both are valid, but helpers can be more consistent, and sometimes more performant:
+
+logger.Info("Someone is loose in the server room",
+	"name", "Boots",
+	"id", 80045,
+)
+// 2024-01-15T10:30:45.123Z INFO msg="Someone is loose in the server room" name=Boots id=80045
+
+Structured logs are more readable, but more importantly, their interface can output JSON (or another format) just by changing the handler. Imagine if your app had thousands of log lines and you had to rewrite all of them just to ship a new format or destination... no fun.
+
+Assignment
+Add structured fields to your most important logs.
+
+In your request logging middleware, replace the raw string log with structured key/value pairs:
+Message: "Served request"
+method: HTTP method of the request
+path: URL path of the request
+client_ip: Remote IP address of the request
+Convert the remaining fmt.Sprintf-style logs in auth.go, handlers.go, and store.go to structured key/value pairs.
+Restart your server with LINKO_LOG_FILE=linko.access.log set:
+
+LINKO_LOG_FILE=linko.access.log go run .
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+L6: Output Formats
+
+Output Formats
+As you know, log/slog supports JSON output, as well as arbitrary custom formats, but so far we've only used text... let's change that.
+
+JSON is great for production logging because it's easy for log aggregation and analysis tools to parse. Most log ingestion systems, such as the ELK Stack and Loki, accept JSON logs – even when they also support their own proprietary formats.
+
+I prefer JSON logs for storage and filtering in production, but text logs for debugging and development.
+
+Assignment
+Switch your file logs to JSON while keeping local terminal logs readable.
+
+Update the file logger to use slog.NewJSONHandler instead of slog.NewTextHandler.
+Keep STDERR logging on slog.NewTextHandler.
+Restart your server with LINKO_LOG_FILE=linko.access.log set:
+
+LINKO_LOG_FILE=linko.access.log go run .
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+CH4: Log Strategies
+
+L1: Best Practices
+Best Practices
+Logging is often taken for granted. We all want useful logs when something goes wrong, but while writing new code, it's easy to forget about logging.
+
+Let's be better.
+
+Click to hide video
+
+Who Are Logs For?
+Logs serve different purposes depending on who is reading them.
+
+Think about the last time you looked at logs for a program you didn't write. How did you approach them differently from logs for a program you did write?
+
+It's always easier to understand logs for a program you wrote, because you have full context. Good logging practices ensure that others can understand your logs too. Examples include:
+
+Developers: (You and your team) the folks who build the software
+Operations: (SREs or Ops engineers) the folks who install and run the software
+Customer Support: the folks who help customers directly
+Customers / End-Users: the folks who use the software
+Auditors: the folks who ensure compliance with regulations
+In this course, we'll focus on creating good logs for developers and operators – the most common readers in backend applications.
+
+What Makes Good Logs?
+Developers and operators typically read logs when something goes wrong. They want to understand what happened and why it happened. As such, valuable logs tend to be:
+
+Discoverable: Easy to find, access, and search.
+Clear: Easy to read, parse, and understand.
+Specific: "File not found" isn't very specific... What file? What function failed? Did the underlying syscall return an error?
+Contextual: Which handler produced the error? Which user made the request? What permissions did they have?
+Privacy-sensitive: Logs should not include passwords, credit card numbers, or other personally identifiable information (PII). Better to log IDs than emails.
+
+L2: Timestamps
+
+Timestamps
+This might seem obvious (and most default loggers do this), but always include timestamps in your logs.
+
+Even if your logs are complete jank, timestamps at least let us do brute-force investigation. Take a look:
+
+2023/10/01 12:34:57 INFO: User "alice" logged in
+2023/10/01 12:34:57 INFO: Opening profile configuration for user "alice"
+2023/10/01 12:34:57 ERROR: File not found
+
+Each log entry alone isn't very useful, but the timestamps allow us to deduce that they're probably related, and that the "File not found" error likely relates to opening Alice's profile configuration file.
+
+One exception is in automated tests. You may want to remove or overwrite timestamps for deterministic output.
+
+Assignment
+Write a test for requestLogger that verifies timestamped output.
+
+Add this test function to a new *_test.go file in the main package:
+
+func Test_requestLogger(t *testing.T) {
+	logBuffer := &bytes.Buffer{}
+
+	logger := slog.New(slog.NewTextHandler(logBuffer, &slog.HandlerOptions{
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey {
+				return slog.Time(slog.TimeKey, time.Date(2023, 10, 1, 12, 34, 57, 0, time.UTC))
+			}
+			return a
+		},
+	}))
+
+	requestLoggerMiddleware := requestLogger(logger)
+	dummyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	loggedHandler := requestLoggerMiddleware(dummyHandler)
+
+	req := httptest.NewRequest("GET", "http://lin.ko/api/stats", nil)
+	rr := httptest.NewRecorder()
+	loggedHandler.ServeHTTP(rr, req)
+
+	const expectedLogString = `time=2023-10-01T12:34:57.000Z level=INFO msg="Served request" method=GET path=/api/stats client_ip=192.0.2.1:1234` + "\n"
+	const expectedStatusCode = http.StatusOK
+
+	// replace the .Skip() call with two checks to verify the log string and status code here
+	// If either doesn't match, use t.Errorf to report the failure with a helpful message.
+	t.Skip()
+}
+
+Notice that we're using the httptest package to create a dummy HTTP request and response recorder. This is a cool way to "end-to-end" test an individual HTTP handler.
+
+Replace t.Skip with two checks. If either check fails, use t.Errorf to report the failure with a helpful message.
+
+Compare logBuffer.String() to the expected log string.
+Compare rr.Code to the expected status code.
+Run and submit the CLI tests from the root of the Linko repo.
+
+L3: Minimal Logging
+
+Minimal Logging
+Logs are a great tool. But it's possible, even easy, to overdo it. There's nothing worse than trying to debug a problem, only to be overwhelmed by a torrent of useless log messages.
+
+I once worked at a company that spent almost as much on their third-party logging service as they did on their cloud provider. They just logged way more than they needed.
+
+I recommend a minimal logging strategy.
+
+Don't log the same event more than once
+Don't log anything you don't care about
+Don't log events that may resolve automatically (e.g. the first failure of a retry loop)
+Log at the appropriate severity level
+Use structured logging to enable better filtering and searching
+Include timestamps for better event correlation
+
+L4: Redundant Logs
+
+Redundant Logs
+I've seen so many logs that look like this:
+
+time=2023-10-01T12:34:57Z level=DEBUG msg="Calling getUserFromDB"
+time=2023-10-01T12:34:57Z level=DEBUG msg="Entering getUserFromDB"
+
+func handlerGetUser() error {
+	slog.Debug("Calling getUserFromDB")
+	user, err := getUserFromDB()
+	// ...
+}
+
+func getUserFromDB() error {
+	slog.Debug("Entering getUserFromDB")
+	// ...
+}
+
+Calling getUserFromDB and Entering getUserFromDB are completely redundant. Choose one (probably the latter because it's less error-prone) and remove the other.
+
+A Trickier Example
+A closely related, but even more prevalent anti-pattern, comes up when logging error cases:
+
+time=2023-10-01T12:34:57Z level=ERROR msg="Failed to validate item" item_no=0 item="Baby Food" error="item Baby Food is invalid"
+time=2023-10-01T12:34:57Z level=ERROR msg="Failed to validate purchase" error="item Baby Food is invalid"
+
+These logs are nearly identical, generated from code like this:
+
+func order(purchase Purchase) {
+	if err := validatePurchase(purchase); err != nil {
+		slog.Error("Failed to validate purchase", "error", err)
+		return
+	}
+	// happy path...
+}
+
+func validatePurchase(purchase Purchase) error {
+	for i, item := range purchase.Items {
+		if err := validateItem(item); err != nil {
+			slog.Error("Failed to validate item", "item_no", i, "item", item, "error", err)
+			return err
+		}
+	}
+	return nil
+}
+
+To be fair, they're not entirely redundant. The validatePurchase log includes contextual details that aren't available to the parent function (order()). The solution here isn't as straightforward as the previous one. We'll come back to it later, but for now, just know that we'd prefer to compress these two logs into a single entry without losing important context.
+
+Assignment
+Log this redundant failure once, at the right layer.
+
+In validatePassword, remove logs for errors that are immediately returned.
+Keep returning those errors. The authentication middleware already logs a single "error validating password" entry with the user key.
+Restart your server with LINKO_LOG_FILE=linko.access.log set:
+
+LINKO_LOG_FILE=linko.access.log go run .
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+L5: One Log Per Event
+
+One Log Per Event
+While timestamps help, it's still hard to correlate independent log entries. That's why we strive for one log per event. Take a look at our sloppy example from before:
+
+2023/10/01 12:34:57 INFO: User "alice" logged in
+2023/10/01 12:34:57 INFO: Opening profile configuration for user "alice"
+2023/10/01 12:34:57 ERROR: File not found
+
+This can be compressed into a single log entry:
+
+2023/10/01 12:34:57 severity="ERROR" message="File not found" user="alice" filename="alice_profile.json" action="open_profile"
+
+Now one entry has all the necessary information about the event, including the user, the action being performed (opening the profile), and the specific error encountered.
+
+While that might not seem like a big improvement at first, imagine if the 3 logs from the first example had other logs in between them, like this:
+
+2023/10/01 12:34:57 INFO: User "alice" logged in
+2023/10/01 12:34:57 ERROR: Not enough permissions
+2023/10/01 12:34:57 INFO: Opening profile configuration for user "bob"
+2023/10/01 12:34:57 INFO: Opening profile configuration for user "alice"
+2023/10/01 12:34:57 DEBUG: Opening database connection
+2023/10/01 12:34:57 ERROR: File not found
+
+Now correlating actions becomes practically impossible unless we compress them into single log events.
+
+Don't log every action, log the entire event.
+
+Take a look at this function that reads a PID file:
+
+func readPIDFile(filename string) (int, error) {
+	slog.Info("Opening PID file", "filename", filename)
+	file, err := os.Open(filename)
+	if err != nil {
+		slog.Error("Failed to open PID file", "error", err)
+		return 0, err
+	}
+	defer func() {
+		slog.Info("Closing PID file")
+		if err := file.Close(); err != nil {
+			slog.Error("Failed to close PID file", "error", err)
+		}
+	}()
+	slog.Info("Reading PID file")
+	content, err := io.ReadAll(file)
+	if err != nil {
+		slog.Error("Failed to read PID file", "error", err)
+		return 0, err
+	}
+	slog.Info("Parsing PID file content", "filename", filename)
+	pid, err := strconv.Atoi(strings.TrimSpace(string(content)))
+	if err != nil {
+		slog.Error("Failed to parse PID file content", "error", err)
+		return 0, err
+	}
+	slog.Info("Successfully read PID", "pid", pid)
+	return pid, nil
+}
+
+It's just reading a single file, but we have to read the entire play-by-play of the operation:
+
+time=2023-10-01T12:34:57Z level=INFO msg="Opening PID file" filename="/var/run/myapp.pid"
+time=2023-10-01T12:34:57Z level=INFO msg="Reading PID file"
+time=2023-10-01T12:34:57Z level=INFO msg="Successfully read PID" pid=12345 filename="/var/run/myapp.pid"
+time=2023-10-01T12:34:57Z level=INFO msg="Closing PID file"
+
+Instead, log a single entry for the entire "event":
+
+func readPIDFile(filename string) (int, error) {
+	file, err := os.Open(filename)
+	if err != nil {
+		slog.Error("Failed to open PID file", "error", err, "filename", filename)
+		return 0, err
+	}
+	defer file.Close()
+	content, err := io.ReadAll(file)
+	if err != nil {
+		slog.Error("Failed to read PID file", "error", err, "filename", filename)
+		return 0, err
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(content)))
+	if err != nil {
+		slog.Error("Failed to parse PID file content", "error", err, "filename", filename)
+		return 0, err
+	}
+	slog.Info("Successfully read PID", "pid", pid, "filename", filename)
+	return pid, nil
+}
+
+time=2023-10-01T12:34:57Z level=INFO msg="Successfully read PID" pid=12345 filename="/var/run/myapp.pid"
+
+Assignment
+Something very... redundant... is going on in handlerShortenLink in handlers.go.
+
+Run the Linko server with LINKO_LOG_FILE=linko.access.log set and log in using frodo / ofTheNineFingers.
+Create a short link for https://www.boot.dev/blog/golang. Notice that you get 3 new INFO logs for a single event!
+Remove the first two logs ("Shortening URL" and "Parsed URL"). Keep the final success log ("Successfully generated short code").
+Run and submit the CLI tests from the root of the Linko repo.
+
+CH5: Logging Errors
+L1: Logging Errors
+
+Logging Errors
+Error handling and logging are two separate but intrinsically linked topics. So much of logging is about reporting errors.
+
+So while not all logs are errors, most errors should be logged... with some exceptions.
+
+logs vs errors
+
+L2: Stack Traces
+Stack Traces
+Probably the single most useful thing we can do for error diagnosis is include a stack trace in the log. Say a user contacts tech support and reports that the website is hanging. You check the logs and find this:
+
+2024-06-10T12:34:56Z ERROR Failed to connect to database
+
+... great. Not super useful. But what if you had this instead?
+
+2024-06-10T12:34:56Z ERROR Failed to connect to database
+github.com/myorg/myapp/db.Connect
+    /src/bootdev/course-draft-learn-logging/examples/errors/stacktrace/main.go:25
+github.com/myorg/myapp/handlers.GetUser
+    /src/bootdev/course-draft-learn-logging/examples/errors/stacktrace/main.go:40
+github.com/myorg/myapp/server.ServeHTTP
+    /src/bootdev/course-draft-learn-logging/examples/errors/stacktrace/main.go:55
+net/http.serverHandler.ServeHTTP
+    /usr/local/go/src/net/http/server.go:2887
+net/http.(*conn).serve
+    /usr/local/go/src/net/http/server.go:1952
+
+The full stack trace shows immediately where the error occurred, and what code paths led to it.
+
+Pkg Errors Package
+Go's standard logging libraries don't give us stack traces out of the box, but several third-party libraries do. One of the earliest and most popular is github.com/pkg/errors. Although this package is now archived and no longer actively maintained, many libraries still maintain compatibility with its API because it was so widely adopted.
+
+There are two important parts of the process:
+
+Creating errors with stack traces
+Extracting stack traces from errors, so they can be logged
+Wrapping an error with a stack trace is easy with WithStack:
+
+import pkgerr "github.com/pkg/errors"
+
+func Start(ctx context.Context) error {
+	err := db.Connect(ctx)
+	if err != nil {
+		// adds a stack trace to the
+		// err at the point `WithStack` is called
+		return pkgerr.WithStack(err)
+	}
+	return nil
+}
+
+I like to wrap errors at the boundary between my code and the code I don't control (standard library, third-party libraries, etc.). This way I just get stack traces "at the edges" of my code, and they're maximally useful for finding issues in my code, without being too noisy.
+
+Printing the stack with the error is easy; a single formatting verb does the trick:
+
+cause := errors.New("whoops")
+err := pkgerr.WithStack(cause)
+
+// adds the stack trace to the end of the error message
+logger.Error(msg, "error", fmt.Sprintf("%+v", err))
+
+Handlers in log/slog give us a ReplaceAttr callback that can centralize stack trace extraction logic:
+
+logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+	ReplaceAttr: replaceAttr,
+}))
+
+func replaceAttr(groups []string, a slog.Attr) slog.Attr {
+	if a.Key == "error" {
+		err, ok := a.Value.Any().(error)
+		if !ok {
+			return a
+		}
+		return slog.String("error", fmt.Sprintf("%+v", err))
+	}
+	return a
+}
+
+With this, if any structured log has an error attribute, it formats that error using %+v – which, for errors wrapped with WithStack, includes the full stack trace. If the error doesn't have a stack trace, it still prints the error message as usual.
+
+Assignment
+Add stack traces to Linko's logged errors.
+
+Add the github.com/pkg/errors package to your module:
+go get github.com/pkg/errors
+
+Update both logger handlers in initializeLogger to use the replaceAttr function shown above.
+In validatePassword in auth.go, wrap the non-nil returned error with pkgerr.WithStack(...) before returning.
+Restart your server with LINKO_LOG_FILE=linko.access.log set:
+
+LINKO_LOG_FILE=linko.access.log go run .
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+L3: Slog Groups
+
+Slog Groups
+In the last lesson, we saw how to intercept and modify log key/value pairs with the ReplaceAttr callback. But we introduced a bit of a code smell at the same time: we're now emitting stack trace data in the same string as our error message.
+
+{
+  "level": "ERROR",
+  "msg": "error validating password",
+  "error": "invalid stored credential format\ngithub.com/myorg/myapp/auth.validatePassword\n\t/src/auth.go:42\n..."
+}
+
+Aren't we supposed to be structuring our logs? Now it's cumbersome to search just the error message, or just the stack trace. And what if we have other error attributes we care about logging in some applications? Error codes and other metadata are common.
+
+What we really want is something like this:
+
+{
+  "level": "ERROR",
+  "msg": "error validating password",
+  "error": {
+    "message": "invalid stored credential format",
+    "stack_trace": "github.com/myorg/myapp/auth.validatePassword\n\t/src/auth.go:42\n...",
+    "error_code": 12345,
+    "error_subcode": 3.14159
+  }
+}
+
+log/slog gives us a tool for this exact problem: groups.
+
+slog.Group and slog.GroupAttrs
+The slog.Group function creates a group attribute for use in log calls:
+
+logger.Info("user logged in",
+	slog.Group("user",
+		slog.String("name", "frodo"),
+		slog.String("role", "ringbearer"),
+	),
+)
+
+This produces nested output in JSON:
+
+{
+  "level": "INFO",
+  "msg": "user logged in",
+  "user": { "name": "frodo", "role": "ringbearer" }
+}
+
+And dotted keys in text format:
+
+level=INFO msg="user logged in" user.name=frodo user.role=ringbearer
+
+There's also slog.GroupAttrs, which does the same thing but takes slog.Attr values instead of any. This is useful inside replaceAttr, where you're already working with slog.Attr values:
+
+return slog.GroupAttrs("error",
+	slog.Attr{Key: "message", Value: slog.StringValue("something went wrong")},
+	slog.Attr{Key: "stack_trace", Value: slog.StringValue("...")},
+)
+
+Assignment
+Split error message and stack trace into separate fields.
+
+Add a stackTracer interface to extract stack traces from errors wrapped with pkg/errors:
+type stackTracer interface {
+	error
+	StackTrace() pkgerr.StackTrace
+}
+
+Update replaceAttr to use slog.GroupAttrs, nesting message and stack_trace under the "error" key. Use errors.AsType to check whether the error implements stackTracer:
+if stackErr, ok := errors.AsType[stackTracer](err); ok {
+	return slog.GroupAttrs("error", slog.Attr{
+		Key:   "message",
+		Value: slog.StringValue(stackErr.Error()),
+	}, slog.Attr{
+		Key:   "stack_trace",
+		Value: slog.StringValue(fmt.Sprintf("%+v", stackErr.StackTrace())),
+	})
+}
+
+Restart your server with LINKO_LOG_FILE=linko.access.log set:
+
+LINKO_LOG_FILE=linko.access.log go run .
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+L4: Handle Errors Once
+
+Handle Errors Once
+Dave Cheney, who developed the github.com/pkg/errors package, wrote a great blog post about error handling and logging called Don't just check errors, handle them gracefully. One section in particular has stuck with me (paraphrased here):
+
+You should handle errors only once. Handling an error means inspecting the error value, and making a decision. If you make less than one decision, you're ignoring the error. But making more than one decision in response to a single error can also be problematic.
+
+Consider the following example:
+
+func Write(w io.Writer, buf []byte) error {
+	_, err := w.Write(buf)
+	if err != nil {
+		// annotated error goes to log file
+		log.Println("unable to write:", err)
+
+		// unannotated error returned to caller
+		return err
+	}
+	return nil
+}
+
+In this function, if an error occurs during Write, a line is written to a log file. Then the same error is returned to the caller, who may log it and return it again all the way up the call stack.
+
+How many times will the one error be logged? It's difficult to say!
+
+This is often called the "log-and-rethrow" pattern, at least in languages that use exceptions.
+
+So, how do we handle errors once?
+
+Error Context
+Since Go 1.13 (or earlier, with github.com/pkg/errors), it's possible to add further context to an existing error. The fmt.Errorf function has a %w verb that lets us wrap an error with additional context in a way that can be unwrapped later.
+
+Say we have this problematic code that handles the same error twice, once with more detailed information (validatePurchase) and once with less (order):
+
+func order(purchase Purchase) {
+	if err := validatePurchase(purchase); err != nil {
+		slog.Error("Failed to validate purchase", "error", err)
+		return
+	}
+	// happy path...
+}
+
+func validatePurchase(purchase Purchase) error {
+	for i, item := range purchase.Items {
+		if err := validateItem(item); err != nil {
+			slog.Error("Failed to validate item", "item_no", i, "item", item, "error", err)
+			return err
+		}
+	}
+	return nil
+}
+
+The better approach is to instead handle the error only once in the parent function (order), while still adding information to the error from the child function (validatePurchase) using fmt.Errorf.
+
+func order(purchase Purchase) {
+	if err := validatePurchase(purchase); err != nil {
+		slog.Error("Failed to validate purchase", "error", err)
+		return
+	}
+	// happy path...
+}
+
+func validatePurchase(purchase Purchase) error {
+	for i, item := range purchase.Items {
+		if err := validateItem(item); err != nil {
+			return fmt.Errorf("failed to validate item %d (%v): %w", i, item, err)
+		}
+	}
+	return nil
+}
+
+Assignment
+Take a look at store.Lookup in internal/store/store.go. It currently logs a read error and returns it – yuck:
+
+s.logger.Error("failed to read", "path", filepath.Join(s.dir, short), "error", err)
+return "", err
+
+Remove the s.logger.Error call from Lookup.
+Replace the bare return "", err with a call to fmt.Errorf that returns a wrapped error in this format: read %s: %w where %s is the shortcode's filepath, and %w is the original error.
+Now the error is handled once in handlerRedirect, and the path context from the store is carried along inside the wrapped error rather than in a separate log line.
+
+Restart your server with LINKO_LOG_FILE=linko.access.log set:
+
+LINKO_LOG_FILE=linko.access.log go run .
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+L5: Adding Attributes
+
+Adding Attributes
+Remember this example code that (properly) handles the error only once?
+
+func order(purchase Purchase) {
+	if err := validatePurchase(purchase); err != nil {
+		slog.Error("Failed to validate purchase", "error", err)
+		return
+	}
+	// happy path...
+}
+
+func validatePurchase(purchase Purchase) error {
+	for i, item := range purchase.Items {
+		if err := validateItem(item); err != nil {
+			return fmt.Errorf("failed to validate item %d (%v): %w", i, item, err)
+		}
+	}
+	return nil
+}
+
+The problem is that it came at a cost. We're no longer taking advantage of structured logging for item number and item details... let's fix that.
+
+I'm a fan of building a custom error type that uses the same pattern as WithStack from github.com/pkg/errors. It lets us store extra attributes on an error and extract them later for logging. Something like this:
+
+type errWithAttrs struct {
+	error
+	attrs []slog.Attr
+}
+
+func WithAttrs(err error, args ...any) error {
+	return &errWithAttrs{
+		error: err,
+		attrs: argsToAttr(args),
+	}
+}
+
+// argsToAttr turns a list of typed or untyped values into a slice of [slog.Attr].
+// args[i] is treated as a key if it is a string or an [slog.Attr]; otherwise, it
+// is treated as a value with key "!BADKEY".
+func argsToAttr(args []any) []slog.Attr {
+	attrs := make([]slog.Attr, 0, len(args))
+	for i := 0; i < len(args); {
+		switch key := args[i].(type) {
+		case slog.Attr:
+			attrs = append(attrs, key)
+			i++
+		case string:
+			if i+1 >= len(args) {
+				attrs = append(attrs, slog.String("!BADKEY", key))
+				i++
+			} else {
+				attrs = append(attrs, slog.Any(key, args[i+1]))
+				i += 2
+			}
+		default:
+			attrs = append(attrs, slog.Any("!BADKEY", args[i]))
+			i++
+		}
+	}
+	return attrs
+}
+
+Now our previous example can be rewritten to use WithAttrs so we keep the structured fields!
+
+func validatePurchase(purchase Purchase) error {
+	for i, item := range purchase.Items {
+		if err := validateItem(item); err != nil {
+			return WithAttrs(
+				fmt.Errorf("failed to validate item: %w", err),
+				"item_no", i,
+				"item", item,
+			)
+		}
+	}
+	return nil
+}
+
+Extracting the Attributes
+The errWithAttrs type we created has an Attrs() method, and we could simply call it, but that introduces a problem: if there are multiple layers of wrapped errors, we'll only extract attributes from the outermost error. To solve that, let's add a helper that extracts all attributes from an error chain:
+
+func (e *errWithAttrs) Unwrap() error {
+	return e.error
+}
+
+func (e *errWithAttrs) Attrs() []slog.Attr {
+	return e.attrs
+}
+
+type attrError interface {
+	Attrs() []slog.Attr
+}
+
+// Attrs recursively extracts all logging attributes from an error chain. In the
+// case of duplicate keys, the outermost value takes precedence.
+func Attrs(err error) []slog.Attr {
+	var attrs []slog.Attr
+	for err != nil {
+		if ae, ok := err.(attrError); ok {
+			attrs = append(attrs, ae.Attrs()...)
+		}
+		err = errors.Unwrap(err)
+	}
+	return attrs
+}
+
+Once you get really disciplined about structured logging and error handling, you may find yourself writing a number of log-related helpers like these. You (or your company) may want to keep them in a shared package to avoid code duplication.
+
+Assignment
+Keep structured error context without reintroducing redundant logs.
+
+Create internal/linkoerr with errWithAttrs, WithAttrs, Attrs, and the related helpers described above.
+Update replaceAttr to extract attributes with linkoerr.Attrs(err) and include them in the grouped "error" fields with slog.GroupAttrs.
+The error group (with "message" and any extracted attrs) should always be produced when the value is an error, not only when a stack trace is present.
+Update the store package error handling:
+In the walk() method, replace the fmt.Errorf wrapping with linkoerr.WithAttrs(err, "path", filepath.Join(s.dir, e.Name())).
+In the Lookup() method, remove both fmt.Errorf wrappers entirely - return raw errors (ErrNotFound and err).
+Restart your server with LINKO_LOG_FILE=linko.access.log set:
+
+LINKO_LOG_FILE=linko.access.log go run .
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+L6: Multiple Errors
+
+Multiple Errors
+What should you do if an operation can generate multiple errors? For example, in a batch operation or when validating multiple fields in a struct. You could log each error as it happens, but that violates our one-log-per-event principle.
+
+I recommend gathering all the errors, and logging them together as a single event.
+
+Joining Errors
+The standard library's errors.Join function combines multiple errors into one. The returned error implements the Unwrap() []error method, which returns the original list of errors. This lets us treat multiple errors as a single error, while still being able to access the individual errors if needed.
+
+This example processes a list of items:
+
+func batchProcess(items []Item) error {
+	var errs []error
+	for _, item := range items {
+		if err := processItem(item); err != nil {
+			errs = append(errs, fmt.Errorf("item %v: %w", item.ID, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+If processing an item fails, it appends the error to a slice. At the end, errors.Join combines all the errors into a single error. If there were no errors, errors.Join returns nil.
+
+Logging Multi-Errors
+Suppose we have the following code to log errors:
+
+err1 := errors.New("first bad thing happened")
+err2 := errors.New("a second really bad thing happened")
+err = errors.Join(err1, err2)
+logger.Error("couldn't connect to server", "error", err)
+
+Our log output will look something like this:
+
+time=2009-11-10T23:00:00.000Z level=ERROR msg="couldn't connect to server" err="first bad thing happened\na second really bad thing happened"
+
+... kinda messy.
+
+A simple option is to update the ReplaceAttr function to check whether an error implements Unwrap() []error, and if so, log each individual error separately:
+
+type multiError interface {
+	error
+	Unwrap() []error
+}
+
+logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+	ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+		if a.Key == "error" {
+			if me, ok := a.Value.Any().(multiError); ok {
+				var errAttrs []slog.Attr
+				for i, err := range me.Unwrap() {
+					errAttrs = append(errAttrs, slog.String(fmt.Sprintf("error_%d", i+1), err.Error()))
+				}
+				return slog.GroupAttrs("errors", errAttrs...)
+			}
+		}
+		return a
+	},
+}))
+
+But even this code still doesn't handle wrapped multi-errors, nor stack traces for individual errors.
+
+There's no obviously correct way to handle all of these cases. I recommend keeping things simple by not nesting multiple errors if possible. When you do join errors, make sure they're simple ones.
+
+Assignment
+Currently, List in internal/store/store.go returns the first error it encounters, which means the caller has no visibility into multiple failures – let's surface them all!
+
+Report multiple failures as one structured event.
+
+In List, collect errors into a []error slice instead of returning on the first failure, then join them into a single error with errors.Join and return it.
+Add a multiError interface (same as above) in main, then update replaceAttr:
+Use errors.AsType[multiError] to detect multi-errors.
+If it's a multi-error, call multiErr.Unwrap() and group each error under numbered keys (error_1, error_2, ...) inside a top-level "errors" group.
+Otherwise, keep logging as a single grouped "error" entry.
+I refactored replaceAttr a bit by extracting some of the logic into a new func errorAttrs(err error) []slog.Attr which builds the attrs slice with:
+
+A message attribute with the error's message
+Any linkoerr attributes that can be extracted from the error
+The stack_trace attribute (only if the error is a stackTracer)
+Restart your server with LINKO_LOG_FILE=linko.access.log set:
+
+LINKO_LOG_FILE=linko.access.log go run .
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+CH6: Logging Context
+L1: Logging Context
+Logging Context
+A log entry is only as valuable as the story it tells, and a huge part of every story is the context in which it takes place.
+
+The story of Frodo taking the ring to Mordor would have been very different (read: awful) if it had happened on Tatooine. Likewise, an error log can have profoundly different implications depending on:
+
+Which machine it came from
+Which request it's related to
+Which user it's related to
+Which service in the monorepo produced it
+Without that surrounding context, a log line is just a fragment of a story; with it, logs become a powerful tool for understanding what actually happened in a distributed system.
+
+L2: Build Information
+Build Information
+Build information is frequently overlooked in production logging, but do so at your own peril. It includes:
+
+The version of your code that produced the log
+The time at which the code was built
+The VCS revision (such as a Git commit SHA) of the code that produced the log
+Build information can feel redundant. Why log the same data on every line if it only changes every few hours?
+
+Your team does build and deploy a few times each day... right? If not, you should!
+
+Avoid Code Version Confusion
+I include build info so there's never ambiguity about which version produced an error, even days or weeks later.
+
+2024-06-10T12:34:56Z level=ERROR msg="Failed to connect to database" version="1.2.3"
+
+Nobody reading this log will be left wondering "Was that before or after we added feature X?" or "Does that code include Bob's fix for caching?"
+
+Log Aggregation
+Build info also makes trend analysis easier. Many logging services do this automatically, and some integrate with your VCS (such as GitHub) to link errors to specific commits.
+
+Deployment Tracking
+If you use canary deployments, rolling deployments, or any strategy that runs multiple app versions at once, build information is a lifesaver.
+
+How to Add Build Info
+So we need a way to get build information into our logs at runtime... and we don't want to hardcode it. Someone will forget to update it, and wrong build information is worse than none at all!
+
+The go build command supports -buildvcs, which stamps VCS metadata into the binary so you can read it at runtime with runtime/debug.ReadBuildInfo. It's convenient, but has tradeoffs:
+
+It requires VCS metadata (like .git) at build time, which is often missing in container builds.
+It only exposes limited fields (revision + build time).
+So I recommend an alternate method...
+
+Using ldflags for Build Info
+go build also supports -ldflags, which lets the linker set package variables at build time.
+
+To use this, create placeholder string variables in your code. You can put them anywhere, but I prefer a dedicated build package that only contains these variables, defaulting to "unknown":
+
+package build
+
+// default build-time variables
+var (
+	GitSHA    = "unknown"
+	BuildTime = "unknown"
+)
+
+Then, we can set them in the logger:
+
+logger = logger.With(
+	slog.String("git_sha", build.GitSHA),
+	slog.String("build_time", build.BuildTime),
+)
+
+At build time, inject the real values with -ldflags:
+
+go build -ldflags "-X my/package/build.GitSHA=$(git rev-parse HEAD) -X my/package/build.BuildTime=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+Assignment
+Attach build metadata to every log entry.
+
+Create a new package internal/build with a build.go file exporting GitSHA and BuildTime string variables, both defaulting to "unknown".
+In your main package, immediately after initializing your logger, add these two fields using Logger.With:
+logger = logger.With(
+	slog.String("git_sha", build.GitSHA),
+	slog.String("build_time", build.BuildTime),
+)
+
+Build your app using -ldflags to inject values at link time:
+go build \
+  -ldflags "-X boot.dev/linko/internal/build.GitSHA=$(git rev-parse HEAD) -X boot.dev/linko/internal/build.BuildTime=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+  -o linko
+
+The boot.dev/linko/internal/build part of the -X flag is the full import path to the variable you want to set. Yours may be a bit different from mine!
+
+Run the prebuilt app with the log file path set:
+LINKO_LOG_FILE=linko.access.log ./linko
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+go run does not support -ldflags variable injection – the variables will remain "unknown" unless you use go build first.
+
+L3: Instance Context
+Instance Context
+Different runtime context matters depending on how your app runs. For desktop or mobile apps, useful fields often include:
+
+Host operating system
+Time zone
+Shared library versions
+For backend services this is usually simpler, but scale still matters. Thousands of pods across regions need more context than one app on one EC2 instance.
+
+What to Log
+All of this is probably overkill for most backends, but it's worth considering:
+
+Runtime environment name (e.g. production, staging, development)
+The server's hostname
+The server's IP address
+Cloud region
+Node name or IP (for containerized services)
+Docker container name or Kubernetes pod name
+Host operating system and kernel version
+Host/server time zone (particularly if you deploy across geographic regions)
+Gathering Runtime Information
+For our purposes, we'll log two fields that are almost always useful:
+
+Runtime environment name (e.g. production, staging, development)
+Server hostname/domain (e.g. jons-macbook (local), c7a9d8b32c4a (container), or ip-172-31-22-45 (cloud server))
+env := os.Getenv("ENV")
+hostname, _ := os.Hostname()
+
+logger = logger.With(
+	slog.String("env", env),
+	slog.String("hostname", hostname),
+)
+
+Assignment
+Include runtime instance metadata in every log.
+
+In your existing Logger.With call, add env and hostname fields after git_sha and build_time.
+Use os.Getenv to read ENV (e.g. development, production).
+Use os.Hostname to get the server hostname.
+Build your app with -ldflags and run it with ENV and LINKO_LOG_FILE set:
+
+go build \
+  -ldflags "-X boot.dev/linko/internal/build.GitSHA=$(git rev-parse HEAD) -X boot.dev/linko/internal/build.BuildTime=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+  -o linko &&
+LINKO_LOG_FILE=linko.access.log ENV=development ./linko
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+L4: Request Context
+
+Request Context
+"I wish the ring had never come to me."
+– Frodo Baggins
+
+A powerful quote. But what if he said that when he first saw Gandalf in the Shire instead of, "You're late!"?
+
+That would be confusing. What ring is he talking about? Gandalf would be missing context.
+
+HTTP Requests
+For HTTP servers, much of the context to log should be related to the specific HTTP request being served. Some good ideas include:
+
+Number of bytes in the request body
+Information about the authenticated user (if any)
+Response code (200, 404, etc.)
+Number of bytes in the response body
+Response duration
+Request User-Agent header
+Request Content-Type header
+Presence of relevant cookies in the request
+Response Content-Type header
+Don't run out and log everything in every app, but add fields as they become useful.
+
+Logging Response Duration
+Let's start with an easy one: response duration.
+
+Record request start time, then subtract when the response finishes.
+
+func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+			next.ServeHTTP(w, r)
+
+			logger.Info("Served request",
+				/* ... other fields ... */
+				slog.Duration("duration", time.Since(start)),
+			)
+		})
+	}
+}
+
+Logging Request Metadata
+We can use a similar trick for request body size:
+
+type spyReadCloser struct {
+	io.ReadCloser
+	bytesRead int
+}
+
+func (r *spyReadCloser) Read(p []byte) (int, error) {
+	n, err := r.ReadCloser.Read(p)
+	r.bytesRead += n
+	return n, err
+}
+
+Replace the request body with our spy wrapper:
+
+func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			spyReader := &spyReadCloser{ReadCloser: r.Body}
+			r.Body = spyReader
+			next.ServeHTTP(w, r)
+
+			logger.Info("Served request",
+				/* ... other fields ... */
+				slog.Int("request_body_bytes", spyReader.bytesRead),
+			)
+		})
+	}
+}
+
+Logging Response Metadata
+The default http.ResponseWriter provided by the standard library doesn't let us inspect the HTTP status sent, the number of bytes sent, or much else, really. However, because it's an interface, it gives us all the flexibility we need to implement our own version that does. Let's consider a simple example:
+
+type spyResponseWriter struct {
+	http.ResponseWriter
+	bytesWritten int
+	statusCode   int
+}
+
+func (w *spyResponseWriter) Write(p []byte) (int, error) {
+	if w.statusCode == 0 {
+		w.statusCode = http.StatusOK
+	}
+	n, err := w.ResponseWriter.Write(p)
+	w.bytesWritten += n
+	return n, err
+}
+
+func (w *spyResponseWriter) WriteHeader(statusCode int) {
+	w.statusCode = statusCode
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+This wrapper delegates to an existing http.ResponseWriter while tracking bytes written and status code. We can use it to enrich response logging:
+
+func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			spyWriter := &spyResponseWriter{ResponseWriter: w}
+			next.ServeHTTP(spyWriter, r)
+
+			logger.Info("Served request",
+				/* ... other fields ... */
+				slog.Int("response_status", spyWriter.statusCode),
+				slog.Int("response_body_bytes", spyWriter.bytesWritten),
+			)
+		})
+	}
+}
+
+Assignment
+Add request and response metadata to the "Served request" log entry.
+
+Update your requestLogger middleware to include:
+
+duration – the time elapsed between receiving the request and finishing the response, using time.Since.
+request_body_bytes – the number of bytes read from the request body, using a spyReadCloser wrapper as shown above.
+response_status – the HTTP status code sent to the client, using a spyResponseWriter wrapper as shown above.
+response_body_bytes – the number of bytes written to the response body, also tracked by spyResponseWriter.
+Rebuild your app with -ldflags, then run it with ENV and LINKO_LOG_FILE set:
+
+go build \
+  -ldflags "-X boot.dev/linko/internal/build.GitSHA=$(git rev-parse HEAD) -X boot.dev/linko/internal/build.BuildTime=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+  -o linko &&
+LINKO_LOG_FILE=linko.access.log ENV=development ./linko
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+L5: User Context
+
+User Context
+Most backend services require authentication on most HTTP handlers.
+
+In Linko, only authenticated users can create short URLs via Basic Auth, using the fixed user list in auth.go.
+
+When a request is authenticated, we already store the username in request context for handlers. Now we also want requestLogger to include it in the final "Served request" log.
+
+Pointer-Based Log Context
+The clean way to do this is to put a pointer to a shared struct in context before serving the request. Downstream middleware and handlers can mutate it, and requestLogger can read final values after next.ServeHTTP(...) returns.
+
+const logContextKey contextKey = "log_context"
+
+type LogContext struct {
+	Username string
+}
+
+Why this helps:
+
+One shared object for request-scoped logging fields.
+It scales beyond just username (we'll add more fields in the next lesson).
+It avoids global state while still letting downstream code communicate back to the logger.
+Assignment
+Include the authenticated username in request logs.
+
+Add a LogContext struct and a const context key, "log_context".
+In requestLogger, create a *LogContext and store it on the request with r.WithContext and context.WithValue before calling next.ServeHTTP(...).
+In authMiddleware, after successful authentication but before serving the request, read and type-assert *LogContext from the request context and set Username.
+Back in requestLogger, after the request is served, add the user attribute when logCtx.Username is non-empty.
+Rebuild your app with -ldflags, then run it with ENV and LINKO_LOG_FILE set:
+
+go build \
+  -ldflags "-X boot.dev/linko/internal/build.GitSHA=$(git rev-parse HEAD) -X boot.dev/linko/internal/build.BuildTime=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+  -o linko &&
+LINKO_LOG_FILE=linko.access.log ENV=development ./linko
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+L6: HTTP Error Responses
+
+HTTP Error Responses
+Now that we can pass logging context upstream, we can improve HTTP error logging. Wouldn't it be useful to include stack traces whenever we log an error status?
+
+We'll start by adding a small helper that wraps http.Error. It still sends the HTTP response, but first stores the error in LogContext (if present) so request logs can include it:
+
+func httpError(ctx context.Context, w http.ResponseWriter, status int, err error) {
+	if logCtx, ok := ctx.Value(logContextKey).(*LogContext); ok {
+		logCtx.Error = err
+	}
+	http.Error(w, err.Error(), status)
+}
+
+Now request logs for error responses include full error details (including stack traces when present). How handy is that?
+
+Assignment
+Capture HTTP response errors in request logs.
+
+Add an Error error field to your LogContext struct.
+Create an httpError helper function (as shown above) that accepts a context.Context, http.ResponseWriter, status code, and error. It should stash the error in the LogContext (if present) and then call http.Error to actually send the response.
+Replace existing http.Error calls in your handlers and auth middleware with the new httpError helper.
+Pass lowercase internal messages (for example, unauthorized and internal server error) so logs stay consistent. That's the Go standard.
+
+Update your requestLogger middleware to include the error from the log context in an "error" attribute if it exists, so each response error is logged once.
+Restart your server with LINKO_LOG_FILE=linko.access.log set:
+
+LINKO_LOG_FILE=linko.access.log go run .
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+L7: Inter-Process Context
+
+Inter-Process Context
+It's important to pass logging context between parts of one app, but we also need to pass context between processes and services over the network.
+
+Request IDs
+In a microservices architecture, you'll usually propagate a request ID across services so related logs can be correlated.
+
+context to microservices
+
+2023/10/01 12:34:57 severity="INFO" message="Authentication succeeded" service="auth" user="alice" request_id="ibaev4EiyaiS1Kot"
+2023/10/01 12:34:57 severity="INFO" message="request served" service="api" request_id="ibaev4EiyaiS1Kot"
+
+For HTTP services, the easiest way to propagate this ID is with a header like X-Request-ID.
+
+Assignment
+Propagate request IDs through headers and logs.
+
+Create a new request ID middleware that reads X-Request-ID from the inbound request. If one isn't present, generate one with rand.Text. Before calling next.ServeHTTP, set the request ID on the response header with w.Header().Set.
+Update your server-wide handler to use the new middleware. It should be called before the request logger middleware.
+Update your request logger middleware to include the request ID (which it can get from the header) in the "request_id" attribute of the log entry.
+Including the request ID in the response header makes debugging easier – clients can report the ID, and you can search your logs for it.
+
+Restart your server with LINKO_LOG_FILE=linko.access.log set:
+
+LINKO_LOG_FILE=linko.access.log go run .
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+CH7: Log Storage
+L1: Log Storage
+
+Log Storage
+There are a lot of good places to keep logs. There are specialized log services, and every major cloud provider has its own approach. We'll start with the basics.
+
+Console Logs
+The simplest place to "store" logs is standard output. In the early days of computing, the "console" was often a printer. Imagine logs rolling off onto a pile of paper like it's 1968.
+
+...not very easy to search.
+
+Today, console logs can be redirected to a file or shipped to your cloud provider's logging service. That's often good enough, and if it is, you don't need to overthink storage.
+
+If you don't have specific needs for searching and aggregating old logs, a file on disk or the "default" logging service provided by your cloud provider is probably sufficient for you. If not, look into third party tools or databases that specialize in log management.
+
+L2: Logging to the Console
+
+Logging to the Console
+We're going to start with console logging, for a couple of reasons.
+
+Linko is already logging to the console!
+In most cases, even when using other logging targets, most applications log to the console during development.
+Adding Color
+Text colors get in the way when logs are ingested into a management system, but for local development and debugging they can be a great addition. Colors help highlight log levels and key information.
+
+Assignment
+Upgrade the console logger to a development-friendly handler.
+
+Add the github.com/lmittmann/tint and github.com/mattn/go-isatty packages to your module.
+When initializing your stderr (text) logger, use tint.NewTextHandler instead of slog.NewTextHandler to add colors.
+Set the NoColor option on tint.NewTextHandler to true if you're not in a tty environment. Use both isatty.IsCygwinTerminal and isatty.IsTerminal, and enable color if either returns true.
+Verify that running the app in a terminal produces colorized output, and that redirecting stderr to a file (e.g. go run . 2>out.log) produces output without color escape codes.
+With the server running, run and submit the CLI tests from the root of the Linko repo.
+
+L3: Filesystem Logging
+
+Filesystem Logging
+Logging directly to the filesystem is less common these days, but it still comes up, and it's worth understanding the fundamentals. We already set up file logging, so let's review the design decisions.
+
+Our Approach
+Linko logs to a file when the LINKO_LOG_FILE environment variable is set. This involves three parts:
+
+Creating the logger that writes to the filesystem.
+Sending logs to both the filesystem logger and the console logger.
+Ensuring that logs to the filesystem are flushed when the application shuts down.
+Another approach is a single logger writing to two outputs: console and file. But then both destinations must receive identical output, and you still have to flush the file correctly. We want flexibility: color in the console, no color in the file, and often JSON in the file but text in the console.
+
+Multiple Loggers
+Our initializeLogger function optionally sends logs to a file when LINKO_LOG_FILE is set:
+
+type closeFunc func() error
+
+func initializeLogger(logFile string) (*slog.Logger, closeFunc, error) {
+	var (
+		handlers []slog.Handler
+		closers  []closeFunc
+	)
+
+	replaceAttr := func(groups []string, a slog.Attr) slog.Attr { /* ... */ }
+
+	// First initialize the console logger
+	handlers = append(handlers, tint.NewTextHandler(os.Stderr, &tint.Options{
+		ReplaceAttr: replaceAttr,
+		NoColor:     !(isatty.IsTerminal(os.Stderr.Fd()) || isatty.IsCygwinTerminal(os.Stderr.Fd())),
+	}))
+
+	if logFile != "" {
+		file, err := os.OpenFile(logFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0x666)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to open log file: %w", err)
+		}
+		bufferedFile := bufio.NewWriter(file)
+		handlers = append(handlers, slog.NewJSONHandler(bufferedFile, &slog.HandlerOptions{
+			ReplaceAttr: replaceAttr,
+		}))
+		closers = append(closers, func() error {
+			if err := bufferedFile.Flush(); err != nil {
+				return fmt.Errorf("failed to flush log file: %w", err)
+			}
+			if err := file.Close(); err != nil {
+				return fmt.Errorf("failed to close log file: %w", err)
+			}
+			return nil
+		})
+	}
+
+	close := func() error {
+		var errs []error
+		for _, closer := range closers {
+			errs = append(errs, closer())
+		}
+		return errors.Join(errs...)
+	}
+	return slog.New(slog.NewMultiHandler(handlers...)), close, nil
+}
+
+This structure makes future logger targets easy to add: append handlers and closers.
+
+L4: Log Rotation
+
+Log Rotation
+Click to hide video
+
+When logging to a file, it's important to rotate it occasionally. Otherwise, it grows forever and eventually fills your disk. Log rotation needs to:
+
+Stop writing to the current log file.
+Rename the existing file, e.g. from linko.log to linko.log.0.
+Create a new log file and start writing to it instead.
+We typically keep a set number of old log files, renaming them all in sequence. For example:
+
+linko.log is the active file, currently being written to
+linko.log.0 is the previous log file
+linko.log.1 is an older one
+linko.log.2 is even older
+linko.log.99 is the oldest log file (assuming we keep 100 log files)
+It's a bit trickier than it sounds. We need to ensure that:
+
+The rotation happens atomically (as one uninterrupted operation), so that we don't lose any log entries during the rotation process.
+Old log files are compressed to preserve disk space.
+Rotation takes place on a regular schedule (perhaps daily), or when the log file reaches a certain size.
+Lumberjack
+Fortunately, Nate Finch created gopkg.in/natefinch/lumberjack.v2, which handles this complexity across operating systems. We just need a few changes to log initialization:
+
+logger := &lumberjack.Logger{
+	Filename:   logFile,
+	MaxSize:    1,
+	MaxAge:     28,
+	MaxBackups: 10,
+	LocalTime:  false,
+	Compress:   true,
+}
+handlers = append(handlers, slog.NewJSONHandler(logger, &slog.HandlerOptions{
+	ReplaceAttr: replaceAttr,
+}))
+
+It will use gzip compression to compress old log files, and will rotate the logs when they reach 1 megabyte in size.
+
+You Won't Usually Rotate Logs in Your Application Code
+Log rotation is usually not handled by application servers themselves. Servers focus on business logic. Rotation is often handled by the infrastructure running the app, such as:
+
+A container orchestrator (like Kubernetes)
+A cloud provider's managed service (like AWS, GCP, or Azure)
+A third party logging service (like Loggly, Datadog, or Sentry)
+We're gonna make it our application's responsibility in this course simply for the learning experience!
+
+Assignment
+Switch file logging to a rotating writer.
+
+Add the gopkg.in/natefinch/lumberjack.v2 package to your module.
+
+Replace the bufio.NewWriter / os.OpenFile setup in your initializeLogger function with a lumberjack.Logger as shown above. Use the configuration from the example.
+
+Update the close function to call logger.Close() on the lumberjack logger instead of flushing and closing the file manually.
+
+Start your server with LINKO_LOG_FILE=linko.access.log set.
+
+Copy this script into the top level of your project as spamhomepage.sh and run it to generate enough logs to trigger rotation:
+
+#!/usr/bin/env bash
+
+set -euo pipefail
+for i in {1..3500}; do
+  curl -sS "http://localhost:8899" > /dev/null
+  if (( i % 100 == 0 )); then
+    echo "Completed $i requests"
+  fi
+done
+
+After running the script, you should have:
+
+An active linko.access.log file
+At least one rotated linko.access*.gz file
+With your server running, run and submit the CLI tests from the root of the Linko repo.
+
+L5: Syslog
+
+Syslog
+Long before cloud logging services (and before "cloud" was even a term), we had syslog. It was developed in the 1980s and is still widely used.
+
+Originally, syslog was both a log-ingestion program and a protocol. We mostly care about the protocol, now implemented by many servers (rsyslog is a popular one) and clients (including the Go library).
+
+A syslog server accepts logs from the network or a Unix socket, and then writes them to a file.
+
+That alone can be useful if you want logs written to a different server than the one generating them. But syslog can do much more.
+
+A syslog server can filter logs (for example, write only ERROR logs to one file), transform formats (for example, to JSON), and forward logs to other systems like databases. You can think of syslog as a "log router".
+
+Using Syslog in Go
+Since version 1, Go has shipped with log/syslog, but it does not do everything you'd expect from a package named "syslog". Its capabilities are limited, and it gets little attention these days. Notably, it does not support structured logging:
+
+func (w *Writer) Err(m string) error
+
+Notice the conspicuous lack of key/value pairs!
+
+I use the github.com/samber/slog-syslog package, developed by Samuel Berthe. It provides a log/slog handler that targets syslog.
+
+Add Syslog to Slog
+Configuring github.com/samber/slog-syslog is straightforward:
+
+Open a connection to your syslog service (typically over a network or Unix socket)
+Configure the slog handler to send logs there!
+syslogWriter, err := net.Dial("udp", "localhost:514")
+if err != nil {
+	panic(err)
+}
+syslogOptions := &slogsyslog.Option{
+	Level:  slog.LevelInfo,
+	Writer: syslogWriter,
+}
+handler := syslogOptions.NewSyslogHandler()
+
+logger := slog.New(handler)
+
+logger.Error("Oh noes!", "syslog", true)
+
+We won't use syslog in Linko, but it's good to know that it exists.
+
+CH8: Log Security
+L1: Can You Keep a Secret?
+
+Can You Keep a Secret?
+Three may keep a secret, if two of them are dead.
+
+– Benjamin Franklin
+
+Click to hide video
+
+Most applications handle several kinds of secrets:
+
+Passwords
+API keys
+Credit card numbers
+Social Security numbers
+The lat/long coordinates where you buried that treasure
+Most of those are obvious, but less-obvious data also needs careful handling:
+
+Account numbers
+The existence of other application users
+Internal architectural details
+Personally identifiable information (PII) such as names, addresses, phone numbers, and even client IP addresses
+Sensitive business information such as special pricing, custom contracts, or internal project names
+But just because information is "private" doesn't mean it's all equally private or should be treated the same way.
+
+The type of sensitive data determines how carefully we handle it. For passwords, best practice is to never store plaintext passwords and to store cryptographic hashes instead. That way, stolen hashes still can't be used directly for login.
+
+It would be ridiculous to apply the same technique to obscuring account numbers, or the fact that you have a database table called project_gondor, which references a new, secret feature you'll be releasing next month.
+
+There's a balance to be struck:
+
+We want useful data to be as accessible as possible.
+We want private data to remain private.
+These goals often conflict, so you need judgment about how to handle each type of information. Let's talk about how common security and privacy techniques apply to logging.
+
+L2: Error Responses
+
+Error Responses
+In general, we want to inform our application's users when something goes wrong.
+
+if err := db.ValidateUser(r.Context(), username, password); err != nil {
+	httpError(r.Context(), 401, err)
+}
+
+This might seem reasonable. But we don't know (at least from this code alone) what the error contains. In the worst case, it may include the username and password. Yikes!
+
+user "bob" unable to log in with password "OpenSesame"
+
+That would obviously be bad. Here's another (and perhaps more realistic) possibility:
+
+sql: no rows in result set
+
+That seems safe, right? No password, no username... but not so fast!
+
+The requester knows which username they sent. If they get this message, they can infer that the username doesn't exist. That's an information leak. An attacker can probe many usernames to discover valid accounts.
+
+A safer approach is to always return a generic "unauthorized" message, regardless of the reason (missing user, bad password, disabled account, and so on).
+
+Consider another subtle example:
+
+table `migrated_users` does not exist
+
+This might happen after a schema change if we forget to update the validation query. It also exposes internal architecture to the caller. Maybe those details aren't exploitable, maybe they are; we usually don't know in advance. Either way, that message is useful to developers, not end users.
+
+There are other times when you'll want to add explicit debugging information to your errors, and you probably don't want that information leaking to your users.
+
+These are all cases where you should log full details but return a safer message to the user.
+
+Assignment
+Return safer HTTP error messages without losing diagnostic logs.
+
+Update your httpError handler to replace the raw error text for 401, 403, and 500 responses with a generic status message from http.StatusText.
+For all other status codes, keep the original error text in the response body.
+Keep storing the full error on LogContext so logs still include the full details.
+Restart your server with LINKO_LOG_FILE=linko.access.log set:
+
+LINKO_LOG_FILE=linko.access.log go run .
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+L3: Minimal Logging
+
+Minimal Logging
+I've been encouraging you to log lots of useful context. So it may be surprising when I now tell you to log only what you absolutely must.
+
+For security, the first line of defense is simple: don't log what you don't need.
+
+Just Don't Log It
+It should be obvious to not log passwords, API keys, and credit card numbers. Code like this often won't make it through a code review:
+
+logger.Info("user attempting to authenticate",
+	"name", username,
+	"password", password,
+)
+
+What's much more likely is something like this:
+
+logger.Info("connecting to database",
+	"dsn", dsn,
+)
+
+This might look innocent in a 215-line pull request... but here's what it logs:
+
+2024-01-15T10:30:45.123Z INFO msg="connecting to database" dsn="postgres://boots:iLik3BakedSal0n@db.boot.dev/backenddatabase"
+
+Oops... now we're logging backend database credentials! That's why I use redaction helpers like this:
+
+func safeDSN(dsn string) string {
+	parsed, err := url.Parse(dsn)
+	if err != nil {
+		return "invalid dsn"
+	}
+	_, ok := parsed.User.Password()
+	if !ok {
+		return parsed.String()
+	}
+	parsed.User = url.UserPassword(parsed.User.Username(), "***")
+	return parsed.String()
+}
+
+logger.Info("connecting to database",
+	"dsn", safeDSN(dsn),
+)
+// 2024-01-15T10:30:45.123Z INFO msg="connecting to database" dsn="postgres://admin:***@db.example.com/appdb"
+
+Don't Log Full Requests and Responses
+While debugging, it's common to want to log full HTTP requests and responses. Resist that urge. They often contain sensitive data like API keys, cookies, and customer data.
+
+req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://bank.example.com/account/details", nil)
+resp, _ := client.Do(req)
+body, _ := io.ReadAll(resp.Body)
+// DANGER: don't log the full URL/BODY -- there may be sensitive data in there!
+logger.Debug("read API response from bank",
+	"url", req.URL.String(),
+	"body", string(body),
+)
+
+Instead, log only the minimum information you need.
+
+L4: Obfuscation
+
+Obfuscation
+Occasionally, you may need to log sensitive data for debugging or monitoring. A simple example is an IP address. An IP address is often considered PII (it can sometimes trace back to a household), but aggregate IP statistics are still useful.
+
+A good solution is to obfuscate the data. For an IP, you might log only the first three octets (192.168.90.50 becomes 192.168.90.x). For a phone number, maybe only the last three digits (555-867-5309 becomes xxx-xxx-x309). You get the idea.
+
+Obfuscation (logging partial segments) is great for striking a balance between useful logs and data security. You can still see patterns in the data, but an attacker can't use the logs maliciously.
+
+Assignment
+Obfuscate client IPs in request logs.
+
+Write a redactIP helper function that takes an address string (which may include a port, e.g. 192.168.1.42:12345) and replaces the final octet of any IPv4 address with x (e.g. 192.168.1.x). Use net.SplitHostPort and net.ParseIP to parse the address. Non-IPv4 addresses should be returned unchanged.
+Update the client_ip field in your requestLogger middleware to pass r.RemoteAddr through redactIP before logging.
+Restart your server with LINKO_LOG_FILE=linko.access.log set:
+
+LINKO_LOG_FILE=linko.access.log go run .
+
+After making a request, check linko.access.log – the client_ip field should show something like 127.0.0.x instead of the full IP.
+
+With the server running, run and submit the CLI tests from the root of the Linko repo.
+
+L5: Filtering Logs
+
+Filtering Logs
+Best practice is to prevent logging sensitive data at the source, but that discipline is hard to maintain, especially in a large codebase with many developers. So it's smart to add some filtering at the logger level during initialization.
+
+var sensitiveKeys = []string{"password", "key", "apikey", "secret", "pin", "creditcardno"}
+
+logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+	// Replace any potentially sensitive values with the string [REDACTED]
+	ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+		if slices.Contains(sensitiveKeys, a.Key) {
+			return slog.String(a.Key, "[REDACTED]")
+		}
+		return a
+	},
+}))
+
+It's virtually impossible to make this approach 100% thorough. So while it helps as a safety net, treat it as a last resort. Use it, but don't rely on it. The real fix is still to avoid logging sensitive data at the source during implementation and review.
+
+Assignment
+Add a last-resort security filter to the logger.
+
+Add a security filter to your replaceAttr function. If a log attribute's key matches a list of sensitive key names (e.g. password, key, apikey, secret, pin, creditcardno), replace its value with [REDACTED]. Use slices.Contains to check the key against your list.
+Also check string values for URLs that contain embedded passwords (using url.Parse and URL.User), and redact the password portion if present.
+Treat usernames as sensitive in this lesson too by adding the user key to your sensitive-key list.
+Make a login request and shorten a URL that contains embedded credentials, then verify both the user field and URL-embedded password are redacted in linko.access.log.
+Obviously, you should never ACTUALLY add a password to a log file, even if you know it's being redacted. This is for educational purposes only! No kittens were harmed in the making of this assignment.
+
+Restart your server with LINKO_LOG_FILE=linko.access.log set:
+
+LINKO_LOG_FILE=linko.access.log go run .
+
+After making those requests, check linko.access.log:
+
+user should be [REDACTED]
+credentialed URLs should contain a redacted password section (not the real value)
+Run and submit the CLI tests from the root of the Linko repo.
+
+L6: Encrypted Logs
+
+Encrypted Logs
+In rare cases, you may find that you absolutely, positively, must log some sensitive information.
+
+In those cases, it's best to encrypt the data, ideally with PKI (public key infrastructure).
+
+I've done this before using the package filippo.io/age. It does require some up-front work, and makes reading logs complicated, but it does provide good security.
+
+First, you'd need to set up a public/private key pair for anyone on your team who may need to read secret logs. Public keys can be committed to your repository and shipped with your application.
+
+var developerPublicKeys = age.Recipient{
+	/* ... developer keys here ... */
+}
+
+// encryptSecretLog encrypts secret for safe logging.
+func encryptSecretLog(secret string) string {
+	dst := bytes.Buffer{}
+	w, err := age.Encrypt(dst, developerPublicKeys...)
+	if err != nil {
+		panic(err)
+	}
+	if _, err := w.Write([]byte(secret)); err != nil {
+		panic(err)
+	}
+	if err := w.Close(); err != nil {
+		panic(err)
+	}
+	return dst.String()
+}
+
+Then you can safely log a secret in encrypted form:
+
+req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://bank.example.com/account/details", nil)
+resp, _ := client.Do(req)
+body, _ := io.ReadAll(resp.Body)
+logger.Debug("read API response from bank",
+	"url", req.URL.String(),
+	"body", encryptSecretLog(string(body)), // <--- now it's encrypted!
+)
+
+The resulting log will look something like this:
+
+2024-01-15T10:30:45.123Z INFO msg="read API response from bank" url="https://bank.example.com/account/details" body="WW91IGZvdW5kIHRoZSBzZWNyZXQhISEK...
+
+You'll need to build a decryption tool that accepts an encrypted log value and a private key to display the original text.
+
+We won't be encrypting logs with Linko, but its useful to be aware of the tactic.
+
+CH9: Metrics
+
+L1: Metrics
+
+Metrics
+If logging is the foundation of an observable system, and alerting is an enhancement, where do metrics fit in?
+
+Would it surprise you that, in a mature system, metrics are often a near-complete replacement for logging?
+
+Good metrics and metric visualizations can give you the insight you need into your application's behavior to pinpoint problem areas, often without even looking at logs.
+
+But we're getting ahead of ourselves.
+
+First...
+
+What Are Metrics?
+Metrics measure certain aspects of our application or its environment (memory and CPU usage, available disk space, etc.). Metrics come in different types:
+
+Counters – How many times did a thing happen?
+Gauges – How much or what percent of a resource is being consumed?
+Histograms – How do disparate events or numbers, such as response times, compare?
+count of HTTP codes
+
+We'll focus primarily on counters, but with that foundation, you can easily expand to the others as needed in future applications.
+
+L2: Prometheus
+
+Prometheus
+Prometheus is a popular open-source monitoring and alerting toolkit. It provides a time-series database for metrics, an API for querying them, and the ability to gather metrics from many sources, such as your applications and operating systems.
+
+We'll install Prometheus and configure Linko to export Prometheus metrics. We'll also set up Grafana to visualize the data Prometheus gathers, but more on that shortly.
+
+Click to hide video
+
+Assignment
+Let's install Prometheus.
+
+If you don't already have Docker installed, install it and start the Docker daemon.
+
+Copy this into a new docker-compose.yaml file at the root of your project.
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+
+Copy this into a new prometheus.yml configuration file, also in your project root:
+
+global:
+  scrape_interval: 1s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+We use 1s here to make scraping easy to observe during development and testing. That's usually too aggressive for production. A more typical interval is 15s-60s depending on scale and cost constraints.
+
+Start the Prometheus server using Docker Compose:
+
+docker compose up
+
+Ensure you can view the web interface at http://localhost:9090/.
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+L3: System Metrics
+
+System Metrics
+If you never set up another metric you should at least monitor system health metrics.
+
+There's nothing worse than your application failing because it ran out of disk space, or crashing because it's out of memory. These types of failures are easily avoided with the absolute minimum of monitoring.
+
+In fact, virtually every cloud provider (AWS, GCP, Azure, etc.) gives you some system-level monitoring, and usually alerting, out of the box.
+
+aws metrics screenshot
+
+And if you're running your own hardware, it's pretty painless to set up basic system metric monitoring out of the box with most tools.
+
+Grafana, which we'll be using in this course, also makes it easy to do system-level monitoring.
+
+L4: Metrics Exporters
+
+Metrics Exporters
+Think of Prometheus as a database for metrics. But a database is only as useful as the data it contains. So where does Prometheus get its data?
+
+Prometheus is pull-based. It scrapes data from sources, then stores that data in its database. This contrasts with push-based systems, where data sources send data directly.
+
+Getting data into Prometheus requires two things:
+
+A data source to pull from (the host machine, a specific application like Linko, etc.)
+Configuring Prometheus to find and pull from that data source
+Assignment
+Add Node Exporter so Prometheus can scrape host-level metrics.
+
+Update your docker-compose.yaml to run Node Exporter alongside Prometheus:
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+  node-exporter:
+    image: prom/node-exporter:latest
+    ports:
+      - "9100:9100"
+
+Add a new scrape job in prometheus.yml so Prometheus scrapes Node Exporter:
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+  - job_name: node_exporter
+    static_configs:
+      - targets: ["node-exporter:9100"]
+
+Restart your services:
+
+docker compose up
+
+Wait at least 10 seconds for Prometheus to scrape and store some data, then run these queries in the Prometheus UI.
+
+Available Memory (in bytes):
+
+node_memory_MemAvailable_bytes
+
+Available Disk Space (in bytes):
+
+node_filesystem_avail_bytes
+
+Prometheus also lets you run functions over stored data like sums and averages. For example, average CPU Usage for the last 5 minutes (percentage):
+
+1 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m]))
+
+Aside from debugging, it's not normal to query Prometheus directly. Another tool like Grafana will typically run these queries for us and visualize the results.
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+L5: What to Measure
+
+What to Measure
+We can measure all sorts of things in our applications, but which ones are valuable? It depends on your context!
+
+If Linko is your startup's core product, you'll probably want to measure some things for Business Intelligence, such as:
+
+How many new users are signing up?
+How often do users cancel their account?
+How often are they sharing shortened links on social media?
+From an operations standpoint, we're more likely interested in things like:
+
+How many shortening requests do we get?
+How many unshortening (redirect) requests do we get?
+How many requests fail?
+How long do requests take on average?
+There are a few models we can use to focus on which metrics matter most: R.E.D. and U.S.E..
+
+RED – Rate, Errors, Duration
+The RED Method applies most closely to services that perform requests, like our Linko service.
+
+Rate: The number of requests per second.
+Errors: The number of those requests that are failing.
+Duration: How long those requests take.
+In this model, Rate and Errors are counters, and Duration is typically represented as a histogram.
+
+success failure and histogram
+
+USE – Utilization, Saturation, Errors
+The related USE Method applies more to finite resources – things like CPU, memory, and disk space.
+
+Utilization: The percentage of time the resource is busy or the percentage of the resource consumed.
+Saturation: The amount of work the resource has to do, such as queue length.
+Errors: The count of error events.
+
+L6: Visualizing Metrics
+
+Visualizing Metrics
+Now let's install and configure Grafana. This is where metrics become fun, at least for those of us who like pretty, colorful charts and graphs.
+
+Assignment
+Install Grafana and connect it to Prometheus.
+
+Add Grafana to your existing docker-compose.yaml with a named data volume:
+grafana:
+  image: grafana/grafana:latest
+  ports:
+    - "3000:3000"
+  environment:
+    - GF_SECURITY_ADMIN_PASSWORD=admin
+  volumes:
+    - grafana_data:/var/lib/grafana
+
+And make sure your compose file has a top-level volume declaration:
+volumes:
+  grafana_data:
+
+Persist Grafana state with a named volume (grafana_data) so your data source and dashboards survive restarts. In production, back this storage with durable infrastructure and avoid wiping it with commands like docker compose down -v.
+
+Restart the Grafana and Prometheus containers to apply the changes:
+docker compose up
+
+Open Grafana at http://localhost:3000 and log in with username admin and password admin. Skip the prompt to set a custom password.
+Out of the box, Grafana is an empty (and potentially confusing) interface. We'll fix that quickly by adding a useful dashboard to monitor your operating system.
+
+Add Prometheus as a data source:
+In the left sidebar, click Connections -> Data sources
+Click Add data source and choose Prometheus
+Set the URL to http://prometheus:9090
+Click Save & test
+Import the Node Exporter Full community dashboard and name it Host System Metrics:
+In the left sidebar, click Dashboards.
+Click New -> Import in the top right.
+Enter dashboard ID 1860 and click Load
+Set the dashboard name to Host System Metrics
+Click Import
+Confirm you can see CPU, memory, disk, and network metrics in the imported dashboard. These are the metrics for your local machine!
+Run and submit the CLI tests from the root of the Linko repo.
+
+L7: Service Metrics
+
+Service Metrics
+Now that Prometheus and Grafana are configured and monitoring the operating system, let's configure Linko to expose application-specific metrics. Prometheus provides official Go support via github.com/prometheus/client_golang/prometheus.
+
+Configuring a Go web app to export Prometheus metrics is straightforward. We'll use the github.com/prometheus/client_golang/prometheus/promhttp package, which provides an HTTP handler we can register on an endpoint of our choice. /metrics is the common convention.
+
+mux.Handle("GET /metrics", promhttp.Handler())
+
+That line registers the promhttp.Handler() to respond to GET requests on /metrics.
+
+Assignment
+Update Prometheus and Grafana to monitor Linko's application metrics.
+
+Add a GET /metrics endpoint to Linko, using promhttp.Handler().
+Start Linko:
+go run .
+
+Configure Prometheus to query Linko by adding a new scrape job to prometheus.yml:
+- job_name: linko
+  static_configs:
+    - targets: ["host.docker.internal:8899"]
+
+for Windows (WSL2) users
+If you're on WSL2 and the linko target stays DOWN, replace host.docker.internal with your WSL IP from hostname -I.
+
+Because Prometheus runs in Docker and Linko runs on your host machine, add extra_hosts to the Prometheus service in docker-compose.yaml so it can reach your host:
+extra_hosts:
+  - "host.docker.internal:host-gateway"
+
+Restart the Prometheus container to pick up the new configuration:
+docker compose up
+
+Wait at least 10 seconds, then query Prometheus to see if you can get Go's garbage collection stats from Linko to confirm it's working:
+go_gc_duration_seconds_sum{job="linko"}
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+L8: Custom Metrics
+
+Custom Metrics
+Now that we have Linko configured to export the default Prometheus metrics, it's time to set up some custom metrics!
+
+The most basic custom metric that virtually every web app should export is a count of HTTP requests by method, path, and status.
+
+// httpRequestsTotal counts requests by method, path and status.
+var httpRequestsTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "http_requests_total",
+		Help: "Total number of HTTP requests.",
+	},
+	[]string{"method", "path", "status"},
+)
+
+This snippet defines a package-level Prometheus counter vector with three important attributes:
+
+Name – The key we'll query via Prometheus/Grafana to read the counter values
+Help – Human-readable text describing the counter
+Labels – Labels let us track fine-grained attributes for each counter value.
+Counter Labels
+I defined three labels above: method, path, and status. These labels give us three "dimensions" across which we can track HTTP requests.
+
+Imagine over the course of a minute, your web application receives four HTTP requests, as a user attempts to log in, unsuccessfully at first:
+
+GET /login 200 OK
+POST /login 401 Unauthorized
+POST /login 401 Unauthorized
+POST /login 200 OK
+This increments the http_requests_total counter four times, each with different labels.
+
+method	path	status	http_requests_total
+GET	/login	200	1
+POST	/login	401	2
+POST	/login	200	1
+Request-Tracking Middleware
+I prefer middleware that handles metric tracking so my "business logic" handlers (the code that does what users care about, like shortening links) don't have to worry about it.
+
+First, define a custom http.ResponseWriter wrapper that captures an HTTP status code when it's written:
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+Then I just write a little middleware function that wraps each request, but also captures the method, path, and status and increments the counter:
+
+func metricsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := &statusRecorder{
+			ResponseWriter: w,
+			status:         http.StatusOK,
+		}
+
+		next.ServeHTTP(rec, r)
+
+		path := r.URL.Path
+		method := r.Method
+		status := strconv.Itoa(rec.status)
+
+		httpRequestsTotal.
+			WithLabelValues(method, path, status).
+			Inc()
+	})
+}
+
+Assignment
+Add a total HTTP requests counter to Linko using promauto.NewCounterVec with method, path, and status labels, as shown above.
+Add a metricsMiddleware that wraps each request, records the response status, and increments the counter with the appropriate label values.
+Restart your server:
+go run .
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+L9: Custom Visualizations
+
+Custom Visualizations
+Now we're tracking every HTTP request with a counter! Prometheus scrapes and stores that data in its metrics database. All we're missing is a visualization.
+
+Assignment
+Build a custom Grafana panel for Linko request rates.
+
+In Grafana, click Dashboards -> New -> New dashboard.
+Click Add visualization.
+Select your Prometheus data source.
+Using the GUI, update the "Metric" of the query to http_requests_total.
+Under Options -> Legend, enter {{status}} so each line is labeled by HTTP status.
+Update the time range of the panel to "Last 5 minutes" and the refresh interval to "5s".
+Reload the Linko homepage at http://localhost:8899, login, and shorten a few URLs to generate some traffic. You should see some cool new lines start to appear live in your dashboard!
+In "Panel options" on the right hand side, set the title to "HTTP Requests Total".
+Click Apply, then Save dashboard. Set the title to "Linko App Metrics" and click "Save."
+Run and submit the CLI tests from the root of the Linko repo.
+
+L10: Status Code Bars
+Status Code Bars
+Line charts are great for trends over time, but they're not always ideal for comparing categorical values.
+
+HTTP status codes are categorical. If we want to compare how many 200, 401, and 500 responses we get, a bar chart is often clearer than a line chart.
+
+Assignment
+Add a new bar chart panel grouped by status code.
+
+Open your Linko App Metrics dashboard in Grafana.
+Add a new visualization ("Add" at the top)
+Set the new panel's visualization type to Bar chart.
+Switch the query editor toggle from "Builder" to "Code". Use this PromQL query to get the total number of HTTP requests by status code:
+sum(increase(http_requests_total[$__range])) by (status)
+
+Click on the "Transformations" tab next to "Queries"
+Select "Add Transformation" → "Reduce" (this will collapse all the different bars into one for each code)
+Go click around generating some traffic in Linko – do some failed logins so you get some nice 401 bars!
+In "Panel options" on the right hand side, rename the panel to "HTTP Status Codes"
+Save the dashboard, and go back to the main dashboard screen – it should now have two visualizations.
+Click "Edit" at the top of the dashboard, and drag and expand the two panels side by side so they each have half the screen.
+Update the dashboard to look at the last 5 minutes of data, and to refresh every 5 seconds. You've got a live dashboard now!
+Save the dashboard.
+Run and submit the CLI tests from the root of the Linko repo.
+
+CH10: Alerting
+
+L1: Alerting
+
+Alerting
+Logging and dashboards are mostly reactive. You inspect them after something suspicious happens.
+
+Alerting is different: it tells you when a condition is bad right now.
+
+There are many alerting tools out there, but you usually want them tied into your metrics monitoring system – so we'll be using Grafana again!
+
+Metrics-Based Alerts
+We'll start with a deliberately noisy alert to prove the full flow works:
+
+query a metric
+evaluate a threshold
+see the rule transition from Normal to Pending to Firing
+Assignment
+Create a noisy alert that fires when the HTTP 401 response rate exceeds 3 requests/minute (calculated over the last 5 minutes).
+
+Ensure your Linko app, Prometheus, and Grafana are running.
+In Grafana, go to Alerting -> Alert rules -> New alert rule.
+Create a new rule called "401 Login Failure Spike" using this query (average number of 401's per minute for the last 5 minutes):
+sum(rate(http_requests_total{status="401"}[5m])) * 60
+
+Configure the condition to fire when the value is above 3.
+Try to log in with "frodo"/"wrongPassword" at least 25 times on the Linko app, triggering 401 responses.
+Click "Run queries" in Grafana. You should see "Series 1" transition to a Firing state.
+Add the Alert to a new folder called "Linko Alerts"
+Add the Alert to a new evaluation group called "Linko Group".
+Set the "Evaluation interval" (how often the rule checks the condition) to 10 seconds
+Set the "pending period" (the duration the rule has to be in a bad state before it transitions to "firing") to None
+The "keep firing for" (the duration the rule will stay in "firing" before it goes back to "normal") should also be None
+Set the "Contact point" for the notifications to "empty" (we won't actually send notifications, but in the real world this is where you'd set up Email, Slack, PagerDuty, etc.)
+Save the alert rule, and stay on the Alert page.
+Make another burst of failed login attempts, then wait about 15 seconds and refresh the alert rule page. You should see it transition to Firing again.
+Run and submit the CLI tests from the root of the Linko repo.
+
+The tests will take around 30 seconds to run because they allow some time for the alert to transition to Firing.
+
+L2: Actionable Alerts
+Actionable Alerts
+The previous lesson used a noisy 401 alert to prove the alerting pipeline works.
+
+Real alerts should be actionable. If a rule fires, an operator should know there's likely a system issue worth investigating.
+
+For example, in most web apps a spike in 5xx responses (there is likely an issue in our service) is much scarier than a spike in 4xx responses (usually an issue in the client's request).
+
+Avoid Alert Fatigue
+An alert that fires constantly gets ignored. Avoiding "alert fatigue" by choosing signals that reflect real incidents is a core part of a good alerting system. A practical first cut is:
+
+alert on 500 spikes
+do not alert on normal user mistakes (like bad credentials)
+Assignment
+Update your alert rule so it focuses on actionable server failures (500 responses), and rename it to "500 Error Spike":
+sum(rate(http_requests_total{status="500"}[5m])) * 60
+
+Keep the threshold at > 3.
+Spam 25 "frodo"/"badPassword" 401 requests in Linko.
+Click "Run queries" to confirm the series is not firing from the 401 requests.
+Spam 25 "saruman"/"malformedPassword" 500 requests in Linko.
+Click "Run queries" again to confirm the series is firing from the 500 requests.
+Save the alert rule, and stay on the Alert page.
+If Grafana hasn't updated yet after the 500 requests, wait about 15 seconds and click "Run queries" again.
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+
+L3: Alert Thresholds
+
+CH11: Profiling
+L1: Profiling
+L2: Integrating pprof
+L3: CPU Profiling
+L4: CPU Profiling Quiz
+L5: Memory Profiling
+L6: Memory Profiling Quiz
+L7: Goroutine Profiling
