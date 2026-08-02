@@ -4,5 +4,6 @@ linko
 vendor/
 *.log
 *.gz
+*.svg
 *.txt
 *.prof

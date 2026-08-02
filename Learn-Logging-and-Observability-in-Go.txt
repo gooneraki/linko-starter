@@ -2918,6 +2918,355 @@ Again, while the profiler is collecting, run the spamredirect.sh script in anoth
 When the profiler is done, run and submit the CLI tests from the root of the Linko repo.
 
 L4: CPU Profiling Quiz
+
+CPU Profiling Quiz
+This is the CPU profile that I got when I ran the pprof command in the last lesson:
+
+File: linko
+Type: cpu
+Time: 2026-03-15 09:11:46 MDT
+Duration: 30.05s, Total samples = 11.08s (36.87%)
+Showing nodes accounting for 11.02s, 99.46% of 11.08s total
+Dropped 62 nodes (cum <= 0.06s)
+      flat  flat%   sum%        cum   cum%
+    10.50s 94.77% 94.77%     10.69s 96.48%  golang.org/x/crypto/blowfish.encryptBlock
+     0.19s  1.71% 96.48%     10.88s 98.19%  golang.org/x/crypto/blowfish.ExpandKey
+     0.19s  1.71% 98.19%      0.19s  1.71%  runtime.asyncPreempt
+     0.08s  0.72% 98.92%      0.08s  0.72%  runtime.pthread_cond_signal
+     0.06s  0.54% 99.46%      0.06s  0.54%  syscall.rawsyscalln
+         0     0% 99.46%     10.88s 98.19%  golang.org/x/crypto/bcrypt.GenerateFromPassword
+         0     0% 99.46%     10.88s 98.19%  golang.org/x/crypto/bcrypt.bcrypt
+         0     0% 99.46%     10.88s 98.19%  golang.org/x/crypto/bcrypt.expensiveBlowfishSetup
+         0     0% 99.46%     10.88s 98.19%  golang.org/x/crypto/bcrypt.newFromPassword
+         0     0% 99.46%     10.91s 98.47%  main.(*server).handlerRedirect
+         0     0% 99.46%     10.94s 98.74%  main.newServer.metricsMiddleware.func5
+         0     0% 99.46%     10.94s 98.74%  main.newServer.newServer.requestID.func1.func4
+         0     0% 99.46%     10.94s 98.74%  main.newServer.newServer.requestLogger.func2.func3
+         0     0% 99.46%     10.91s 98.47%  net/http.(*ServeMux).ServeHTTP
+         0     0% 99.46%     10.95s 98.83%  net/http.(*conn).serve
+         0     0% 99.46%     10.94s 98.74%  net/http.HandlerFunc.ServeHTTP
+         0     0% 99.46%     10.94s 98.74%  net/http.serverHandler.ServeHTTP
+         0     0% 99.46%      0.08s  0.72%  runtime.notewakeup
+         0     0% 99.46%      0.08s  0.72%  runtime.ready
+         0     0% 99.46%      0.08s  0.72%  runtime.semawakeup
+         0     0% 99.46%      0.08s  0.72%  runtime.send.goready.func1
+         0     0% 99.46%      0.08s  0.72%  runtime.startm
+         0     0% 99.46%      0.09s  0.81%  runtime.systemstack
+         0     0% 99.46%      0.09s  0.81%  runtime.wakep
+         0     0% 99.46%      0.06s  0.54%  syscall.syscall
+         0     0% 99.46%      0.06s  0.54%  syscall.syscalln
+
+Read the profile, take a look at the relevant Linko code, and answer the question.
+
+
+What is causing the Linko app to use so much CPU and slow down the redirect endpoint?
+
+1 The redirect has a nested for loop in the handler, which is O(n^2) and is causing the CPU to spike
+
+2 The redirect endpoint is running a meaningless bcrypt hash on the longURL, which is an expensive cryptographic function
+
+3 The redirect endpoint is doing image processing within the handler, which is an expensive operation
+
+4 The redirect endpoint is behind authentication (and shouldn't be), so it's hitting the database each time, which is an expensive operation
+
+Explain
+The correct answer is: The redirect endpoint is running a meaningless bcrypt hash on the longURL, which is an expensive cryptographic function.
+
+Here is why that answer is correct based on the CPU profile provided:
+
+1. Reading flat vs. cum Time
+Look at the very top line of the profile output:
+
+    10.50s 94.77% 94.77%     10.69s 96.48%  golang.org/x/crypto/blowfish.encryptBlock
+
+flat time (10.50s / 94.77%): This represents the actual CPU time spent directly executing code inside blowfish.encryptBlock. Over 94% of the total CPU time was consumed by this single operation!
+Blowfish is the underlying block cipher algorithm used by bcrypt.
+2. Tracing the Call Stack
+Further down in the profile, you can see the stack of function calls leading to that operation:
+
+         0     0% 99.46%     10.88s 98.19%  golang.org/x/crypto/bcrypt.GenerateFromPassword
+         0     0% 99.46%     10.88s 98.19%  golang.org/x/crypto/bcrypt.bcrypt
+         0     0% 99.46%     10.88s 98.19%  golang.org/x/crypto/bcrypt.expensiveBlowfishSetup
+
+Notice how bcrypt.GenerateFromPassword has a cumulative (cum) time of 10.88s (98.19% of the total profile duration). This tells us that nearly all the execution time of the request handler was spent waiting for bcrypt password hashing to finish.
+
+3. Why the other choices are incorrect
+Nested for loop / 
+O
+(
+n
+2
+)
+O(n 
+2
+ ) complexity: If a simple loop were causing the issue, the profile would point to a runtime function or a main application function, not a specific crypto package like golang.org/x/crypto/blowfish.
+Image processing: There are no image-related packages (like image/jpeg or image/png) present in the profile call tree.
+Database / Authentication query: If the bottleneck were database network I/O, the time would be spent waiting on system calls or network drivers (net, database/sql), rather than consuming raw CPU cycles in a hashing package.
+
 L5: Memory Profiling
+
+Memory Profiling
+CPU and memory profiling are the two types you're most likely to use. Let's look at memory profiling now.
+
+The mechanics of gathering the profile are essentially the same. We just use the /heap endpoint in place of /profile:
+
+curl http://localhost:XXXX/debug/pprof/heap?seconds=30 --output memory.prof
+
+Once you've gathered your profile, you can examine it using the same CLI tool:
+
+go tool pprof /path/to/linko memory.prof
+
+As with the CPU profile, you can use the top command to see which functions account for the most memory in the captured profile.
+
+(pprof) top
+Showing nodes accounting for 8.19MB, 100% of 8.19MB total
+      flat  flat%   sum%        cum   cum%
+    4.00MB 48.85% 48.85%     4.00MB 48.85%  linko/internal/foo.buildResponse
+    2.19MB 26.75% 75.60%     2.19MB 26.75%  encoding/json.(*Encoder).Encode
+    2.00MB 24.40%   100%     2.00MB 24.40%  bytes.makeSlice
+
+flat refers to memory attributed directly to the named function
+cum refers to cumulative memory attributed to that function and all its callees.
+GraphViz
+For memory profiling, there's an even better way to visualize the profile: as a graph.
+
+go tool pprof can emit Graphviz DOT output, which can then be converted into an image for visualization. Here's how:
+
+go tool pprof -dot /path/to/linko memory.prof | dot -Tsvg -o memory.svg
+
+This creates a memory.svg file that you can open in an image viewer or web browser. You should see a directed graph of nodes, where each node represents a function, and arrows indicate the function-call flow.
+
+pprof memory profile graph
+
+The graph shows functions that cumulatively consumed more memory as larger nodes. This makes it easy to see very quickly which functions are likely to warrant the most attention. Look especially for large nodes with smaller nodes directly downstream. Since the node size represents cumulative memory allocation, it's those big-to-small jumps that most likely indicate that the upstream function is consuming a lot of memory itself.
+
+Of course, not all functions are called from the same place every time. And you may even have recursive functions. In some cases, this can make interpreting the graph a bit more challenging, but the visual representation should make it more or less clear what's happening.
+
+Assignment
+Linko has a memory leak!
+
+Install Graphviz if you don't have it installed already.
+Rebuild the Linko binary and run it:
+go build -o linko . && ./linko
+
+Start a 30-second heap profile and save it to memory.prof:
+curl -u frodo:ofTheNineFingers "http://localhost:8899/debug/pprof/heap?seconds=30" --output memory.prof
+
+While the profiler is collecting, run the spamredirect.sh script in another terminal to generate traffic:
+./spamredirect.sh 200
+
+After the profile finishes, generate a Graphviz SVG and inspect it in your browser to identify the leak-related hotspot(s):
+go tool pprof -dot linko memory.prof | dot -Tsvg -o memory.svg
+
+Did you figure it out? I'll ask you about it in the next lesson.
+Run the profile one more time, but this time save top output directly to memory.pprof.txt for the CLI tests:
+go tool pprof -top -inuse_space "http://frodo:ofTheNineFingers@localhost:8899/debug/pprof/heap?seconds=30" > memory.pprof.txt
+
+Again, while the profiler is collecting, run the spamredirect.sh script in another terminal to generate traffic:
+./spamredirect.sh 200
+
+When the profiler is done, run and submit the CLI tests from the root of the Linko repo.
+
 L6: Memory Profiling Quiz
+
+Memory Profiling Quiz
+This is the memory profile that I got when I ran the pprof command in the last lesson:
+
+File: linko
+Type: inuse_space
+Time: 2026-03-14 21:50:24 MDT
+Duration: 30s, Total samples = 522.70kB
+Showing nodes accounting for 522.70kB, 100% of 522.70kB total
+      flat  flat%   sum%        cum   cum%
+  522.70kB   100%   100%   522.70kB   100%  internal/bytealg.MakeNoZero
+         0     0%   100%   522.70kB   100%  main.(*server).handlerRedirect
+         0     0%   100%   522.70kB   100%  main.newServer.(*server).authMiddleware.func12
+         0     0%   100%   522.70kB   100%  main.newServer.metricsMiddleware.func5
+         0     0%   100%   522.70kB   100%  main.newServer.newServer.requestID.func1.func4
+         0     0%   100%   522.70kB   100%  main.newServer.newServer.requestLogger.func2.func3
+         0     0%   100%   522.70kB   100%  net/http.(*ServeMux).ServeHTTP
+         0     0%   100%   522.70kB   100%  net/http.(*conn).serve
+         0     0%   100%   522.70kB   100%  net/http.HandlerFunc.ServeHTTP
+         0     0%   100%   522.70kB   100%  net/http.serverHandler.ServeHTTP
+         0     0%   100%   522.70kB   100%  strings.(*Builder).Grow
+         0     0%   100%   522.70kB   100%  strings.(*Builder).grow
+         0     0%   100%   522.70kB   100%  strings.Repeat
+
+
+Read the profile, take a look at the relevant Linko code, and answer the question.
+
+What's the most likely cause of Linko's memory growth in this profile?
+
+1 bcrypt allocations in authentication are leaking into the heap after each redirect
+
+2 The redirect handler keeps appending strangely-repeated URLs to an ever-growing in-memory slice
+
+3 The /api/stats endpoint allocates too much JSON every request and never returns memory to the runtime
+
+4 Graphviz image rendering in pprof keeps large SVG buffers pinned in the Linko process
+
+Let's walk through the reasoning using the profile data.
+
+Reading the profile top-down:
+
+flat  flat%   sum%        cum   cum%
+522.70kB   100%   100%   522.70kB   100%  internal/bytealg.MakeNoZero
+   0     0%   100%   522.70kB   100%  strings.(*Builder).Grow
+   0     0%   100%   522.70kB   100%  strings.(*Builder).grow
+   0     0%   100%   522.70kB   100%  main.(*server).handlerRedirect
+
+The flat value tells you where memory is actually being allocated. Here, 100% of the in-use memory is attributed to internal/bytealg.MakeNoZero, which is a low-level function used to grow byte buffers without zeroing them out - it's called internally by strings.Builder when it needs to grow its buffer.
+
+Tracing the call chain:
+
+Follow the cum (cumulative) column upward through the call stack:
+
+strings.(*Builder).grow → strings.(*Builder).Grow → ... → main.(*server).handlerRedirect
+
+This tells you that the memory being retained is coming from a strings.Builder being grown, and the call stack that leads there passes directly through handlerRedirect. Every other function in the stack (middleware, ServeHTTP, conn.serve, etc.) is just routing the request there - they all show 0 flat memory, meaning they aren't allocating anything themselves.
+
+Why this points to the answer:
+
+strings.Builder.Grow growing repeatedly is a strong signal that something is building an ever-larger string - and since it's inuse_space (memory that hasn't been freed), it means whatever is holding onto that growing content is still referenced somewhere, likely in a slice or variable that persists between requests rather than being scoped to a single request and garbage collected afterward.
+
+Why the other options don't fit the evidence:
+
+bcrypt / authentication: no bcrypt or hashing functions appear anywhere in the profile at all.
+/api/stats / JSON: no JSON marshaling functions show up in the stack either.
+Graphviz / SVG: nothing related to image rendering appears in the call stack.
+The profile is very specific about which function symbols show cumulative memory - and only handlerRedirect's call path is implicated. That's the key skill here: cross-referencing the actual named functions in the stack trace against the code, rather than guessing based on what a handler's endpoint "sounds like" it might do.
+
+Does that clarify how the profile output maps to the correct handler?
+
 L7: Goroutine Profiling
+
+Goroutine Profiling
+One of the most insidious types of bugs in a Go program is a goroutine leak. This happens when we unintentionally create goroutines that never exit. Finding such bugs can be a real pain in the rear end. Well, at least until you use goroutine profiling! Simply use the /goroutine endpoint:
+
+curl http://localhost:XXXX/debug/pprof/goroutine --output goroutine.prof
+
+Notice we didn't include a seconds=X query parameter this time. That's because when profiling goroutines, we get an instantaneous snapshot of all goroutines running at the moment.
+
+I like to let my program run for a while before calling the goroutine profile endpoint because you need to have some goroutines that already leaked!
+
+As before, you can read a goroutine profile using the go tool pprof CLI tool:
+
+go tool pprof /path/to/linko goroutine.prof
+
+As usual, the top command will show a ranked list of... ehm... goroutines:
+
+Showing top 10 nodes out of 15
+      flat  flat%   sum%        cum   cum%
+        10    50%    50%         10    50%  runtime.gopark
+         5    25%    75%          5    25%  runtime.selectgo
+         3    15%    90%          3    15%  linko/internal/worker.run
+         2    10%   100%          2    10%  linko/internal/handler.HandleRequest
+
+What this top-N list means for goroutines is not nearly as intuitive as it is for CPU or memory profiling. The flat and cum counts show the number of goroutines currently (at the time of the snapshot) running that function (directly, or cumulatively, respectively). In this case, half of the active goroutines are running the runtime.gopark function – that is to say, they're waiting for something to do.
+
+Generally, you'll get more useful goroutine profiling insights using the web interface that go tool pprof provides:
+
+go tool pprof -http=:0 /path/to/linko goroutine.prof
+
+We won't be looking for a goroutine leak because they're notoriously brittle to reproduce. That said, I wanted you to at least know that this tool exists!
+
+What is most likely to create an accumulation of goroutines that never exit?
+
+1 Running a single background goroutine in an infinite loop
+
+2 Every ten minutes starting a new goroutine that makes a database call and writes to a file before exiting
+
+3 Each time an HTTP request comes in, spawning a new goroutine to do background work in an infinite loop
+
+4 Each time an HTTP request comes in, making a database call
+
+A goroutine leak occurs when goroutines are created but never finish.
+
+The key parts are:
+- A new goroutine per request: every incoming request adds another goroutine.
+- An infinite loop: each goroutine continues forever and has no natural exit.
+- Accumulation: over time, more and more goroutines remain active, consuming memory and scheduler resources.
+
+The other choices either create only one long-running goroutine or start work that eventually exits. A goroutine that completes can be cleaned up; one stuck in an endless loop cannot.
+
+CH12: Tracing
+L1: Tracing
+
+Tracing
+Tracing records the execution path of a request through a (possibly distributed) system.
+
+You're no doubt familiar with the concept of a "stack trace":
+
+panic: runtime error: invalid memory address or nil pointer dereference
+
+goroutine 1 [running]:
+main.(*User).GetName(0x0)
+	/app/user.go:42 +0x12
+main.validateUser(0x0)
+	/app/validate.go:18 +0x3e
+main.main()
+	/app/main.go:12 +0x2c
+
+In Go, a stack trace is really just a more-or-less human-readable version of a goroutine's stack. And a stack does show some tracing data, because it shows the function at the top of the stack and all of its callers.
+
+But this is more like a "trace snapshot" than a proper trace.
+
+Request Tracing
+A full request trace ideally shows us all the interesting things that happen throughout the lifecycle of a request – not just a snapshot in time (as a stack trace provides). It can also show us timing information, like this:
+
+tracing in jaeger
+
+Notice that the trace shows the entire path of the request, and it's made up of a series of spans. Each span represents a single unit of work. This lets us break the request down into the parts we care about. For example, if we're talking about a request to a handler that:
+
+1. Authenticates the user
+2. Fetches data from a database
+3. Makes an API call to a third party service
+4. Renders a template
+We can create one span for each of those steps. When requests are reportedly "slow", we can see which operation is to blame!
+
+OpenTelemetry & Jaeger
+We'll focus on two popular open source tools: OpenTelemetry and Jaeger.
+
+Similar to the way that Prometheus and Grafana complement each other to provide a complete metrics ingestion and display package, OpenTelemetry and Jaeger work together to gather and display traces.
+
+OpenTelemetry can do much more than traces, including logging, and metrics. And while there are good reasons to use OpenTelemetry for more than tracing in some cases, we'll be focusing just on tracing for this course.
+
+Explain the difference between a log entry and a trace. When would you
+reach for tracing instead of (or in addition to) logging to debug a
+production issue?
+
+Boots is expecting you to satisfy the acceptance criteria:
+
+The student must:
+- Explain that a log entry is a single timestamped record of an event, while a trace represents the full lifecycle of a request as a tree
+of timed spans
+- Describe a scenario where tracing provides value that logs alone don't, such as seeing which step in a multi-step request is slow, or correlating work across multiple services handling the same request
+
+L2: Installing Jaeger
+Installing Jaeger
+The first thing we'll need to begin tracing is the Jaeger web service. Jaeger provides the frontend we'll be using to search for and interact with our gathered traces.
+
+Assignment
+Add Jaeger to your local stack so Linko can export traces.
+
+Add this service to your docker-compose.yaml file:
+jaeger:
+  image: jaegertracing/all-in-one:latest
+  ports:
+    - "16686:16686"
+    - "4317:4317"
+    - "4318:4318"
+
+Start (or restart) your compose stack:
+docker compose up
+
+Confirm Jaeger is reachable at http://localhost:16686.
+There's no data to view just yet – we'll explore the interface more fully after we've set up instrumentation.
+
+Run and submit the CLI tests from the root of the Linko repo.
+
+L3: Request Tracing
+L4: Instrumenting Traces
+L5: Adding Spans
+L6: Reading Traces
+L7: Distributed Tracing
