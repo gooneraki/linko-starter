@@ -3266,7 +3266,142 @@ There's no data to view just yet – we'll explore the interface more fully afte
 Run and submit the CLI tests from the root of the Linko repo.
 
 L3: Request Tracing
+
+Request Tracing
+Let's build a conceptual understanding of traces in OpenTelemetry.
+
+Click to hide video
+
+Traces
+A trace represents a single "request". "Request" is loosely defined, but typical examples include:
+
+A single HTTP request
+A cron job
+A single command (as with a CLI tool)
+A trace has a unique ID, and a tree of spans...
+
+Spans
+A trace is made up of spans. You can think of a span as a stack frame in a stack trace, though the correlation is imprecise because spans can be defined arbitrarily, not only at function boundaries.
+
+Each trace has at least one span, the "root span". Typically, a root span has one or more child spans, which in turn may have grandchild spans, to an arbitrary depth.
+
+Each span has:
+
+A unique ID
+A name (e.g. "HTTP GET /login")
+A start and end time
+Optional metadata such as status, attributes, and events
+Attributes
+Spans may contain an arbitrary set of key/value pairs known as attributes. These are conceptually similar to the key/value pairs we send to logs in earlier chapters.
+
+http.method=POST
+http.route=/login
+user.id=1234
+
+Events
+Events are timestamped annotations on a span. They indicate the instant something noteworthy happened within a span. While we won't be exploring events fully in this course, it's important to know that they exist.
+
+Status
+Finally, each span has a status. By default, each span's status is UNSET, but you can explicitly set a span's status to either OK or ERROR as well. This three-valued system allows you to indicate that specific spans (or operations) within a larger request failed, without failing the entire operation.
+
+Trace 123
+ ├── Span A: HTTP handler        (OK)
+ │     ├── Span B: load user     (OK)
+ │     ├── Span C: apply coupons (ERROR)
+ │     └── Span D: write audit   (OK)
+ └── ...
+
+
+A trace in OpenTelemetry shows three spans: the root span has status OK, one child span has status ERROR, and another child has status UNSET. What does this tell you?
+1 Two of the three operations succeeded and one was never executed
+
+2 The trace data is corrupted – a parent span cannot be OK if a child has an ERROR
+
+3 The entire request failed because any ERROR span causes the trace to fail
+
+4 One operation within the request failed, but the overall request was still handled successfully
+
+Think about the trace as a whole request, and each span as a sub-operation within that request. The key insight is that status is per-span, not global. Each span independently reports whether its own piece of work succeeded, failed, or didn't explicitly report (UNSET).
+
+Here's the breakdown of your scenario:
+
+Root span: OK — This represents the overall handler for the request. Its status is set explicitly, and it says the request, as a whole, was handled successfully.
+Child span: ERROR — One specific sub-operation (say, "load user" or "send email") failed. Something went wrong in that particular unit of work.
+Child span: UNSET — This operation didn't explicitly set a status one way or another. UNSET isn't a failure signal, it's just the default when nobody bothered to mark it OK or ERROR.
+Now let's look at why the other choices don't fit:
+
+"The trace data is corrupted – a parent span cannot be OK if a child has an ERROR" — This assumes statuses must cascade upward automatically, but that's not how OpenTelemetry works. A parent span's status is set independently by the code running in that span. It's entirely valid (and common) for a service to catch an error from a sub-operation, handle it gracefully (like using a fallback or retrying), and still consider the overall request successful.
+"The entire request failed because any ERROR span causes the trace to fail" — This assumes an all-or-nothing failure model, but traces don't have a single pass/fail verdict, only individual span statuses.
+"Two of the three operations succeeded and one was never executed" — This misinterprets UNSET. It doesn't mean "didn't run", it just means "no explicit status was recorded."
+So the correct interpretation is that this system allows for nuance: an internal failure occurred and was recorded, but it didn't necessarily bring down the whole request, similar to how a web server might log an error from one internal call but still return a 200 OK to the end user because it recovered or used a fallback path.
+
+
 L4: Instrumenting Traces
+
+Instrumenting Traces
+To begin sending traces to Jaeger, we need to add instrumentation to our application. The first step is to add several dependencies:
+
+go get \
+  go.opentelemetry.io/otel \
+  go.opentelemetry.io/otel/sdk \
+  go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc \
+  go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp
+
+With these imports in place, we're now ready to initialize the OpenTelemetry exporter in our application.
+
+import (
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+)
+
+func initTracing(ctx context.Context) (func(context.Context) error, error) {
+	exp, err := otlptracegrpc.New(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exp,
+			sdktrace.WithBatchTimeout(2*time.Second),
+		),
+		sdktrace.WithResource(resource.Default()),
+	)
+
+	otel.SetTracerProvider(tp)
+	return tp.Shutdown, nil
+}
+
+By default, the OTLP/gRPC exporter targets localhost:4317 using TLS. We're fine with that port, but we'll need to disable TLS for local development by setting OTEL_EXPORTER_OTLP_TRACES_INSECURE=true.
+
+With the tracing pipeline in place, we can now begin tracing using the middleware function in go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp:
+
+import "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
+func main() {
+	// ...
+	mux := http.NewServeMux()
+	// ... Existing routes setup
+	h := otelhttp.NewHandler(mux, "http.server") // <-- this is the magic!
+	http.ListenAndServe(":8080", h)
+}
+
+By using otelhttp.NewHandler to wrap your root handler, you get:
+
+A trace for each inbound request by creating a root span.
+A root span injected into the request context, so downstream function calls can access it.
+Assignment
+Add an initTracing function (using the options above) that configures the OTLP/gRPC exporter and sets up a TracerProvider.
+Call initTracing just before initializeLogger, and similarly defer a function that shuts it down. Use context.Background() for the shutdown context.
+Wrap your root handler in server.go (*http.ServeMux) with otelhttp.NewHandler to automatically create a trace and root span for each inbound request.
+Restart Linko:
+OTEL_EXPORTER_OTLP_TRACES_INSECURE=true go run .
+
+Make a few HTTP requests by logging in and clicking some redirects
+In the Jaeger UI, click "Search" -> "Service" -> "unknown_service:linko" -> "Find Traces" to see the traces being sent from your application. They're a bit bland for now, don't worry, we'll make them more interesting soon.
+Run and submit the CLI tests from the root of the Linko repo.
+
 L5: Adding Spans
 L6: Reading Traces
 L7: Distributed Tracing
