@@ -2688,12 +2688,135 @@ If Grafana hasn't updated yet after the 500 requests, wait about 15 seconds and 
 
 Run and submit the CLI tests from the root of the Linko repo.
 
-
 L3: Alert Thresholds
+Alert Thresholds
+Setting sane thresholds is what makes alerting practical.
+
+A rule should fire only when a bad condition is sustained long enough to matter. In Grafana, that usually means tuning:
+
+The threshold value (how many 500-status responses is enough to trigger an alert)
+The query window (over what time period we need to see the threshold breached)
+The "pending period" duration (how long the condition must hold)
+We want to avoid firing when a short spike appears and suddenly disappears (for example, a blip in a deployment that self-heals).
+
+Assignment
+Update your alert rule's thresholds and pending duration.
+
+Open the alert rule for editing and change the "pending period" in the evaluation behavior section to 20 seconds and save the rule.
+If necessary, wait for up to 5 minutes for the rule to be in a "normal" state.
+Trigger a brief burst of 25 500 errors by spamming login attempts with "saruman"/"malformedPassword", and refresh the alert rule page.
+Verify the rule is in a "pending" state
+Wait for 20 seconds, refresh the page, and verify the rule is now in a "firing" state.
+Run and submit the CLI tests from the root of the Linko repo.
 
 CH11: Profiling
 L1: Profiling
+Profiling
+In the famous battle of Helm's Deep, Aragorn and Théoden were atop the walls, monitoring as the battle unfolded. When an alert came that the outer wall was weakening, they went down into the culvert to see the situation up close and personal. In an application, this sort of situation calls for the mighty power of profiling!
+
+Profiling is the practice of taking measurements of your running program to learn where it's spending the most CPU cycles, memory, context switches, or other interesting characteristics.
+
+Types of Profiling
+Just as we have metrics for a variety of different aspects of our application, we also have different types of profiling – and sometimes they clearly overlap with our metrics.
+
+CPU utilization – Can tell you how much execution time is spent in specific parts of your program.
+Memory (Heap) utilization – Will tell you which parts of your program use the most memory.
+Thread (or in our case, goroutine) usage – Can help identify logic bugs or resource leaks related to concurrency.
+Blocking calls – Reveals which parts of code spend time waiting for something to happen.
+Execution Tracing – Useful when you need a detailed timeline of events for a particular code execution flow.
+Profiling Tools
+If you've ever done front-end development, you're likely familiar with the Dev Tools of your favorite browser. Go gives us some of the same capabilities, but with a different interface. The two main profiling tools that come with Go are:
+
+runtime/pprof – Go's built-in profiling system for profiling a running Go application.
+testing benchmarks – Custom-built Benchmarking functions, controlled by Go's test suite tools.
+Profile-Driven Development
+Profiling is best used when facing a specific problem. I'd recommend against running the profiler to poke around for optimization opportunities in random places – a clear example of premature optimization. Instead, wait until you're asking these sorts of questions:
+
+Why is a certain operation taking so long?
+Why is the program crashing due to Out-of-Memory errors?
+Why are certain tasks just getting stuck?
+These are great times to pull out Profile-Driven Development!
+
+Profile-Guided Optimization
+One small exception to the rule of premature optimization with profilers is PGO, or Profile-Guided Optimization.
+
+PGO is a compiler optimization technique that feeds information (a profile) from representative runs of the application back into the compiler for the next build of the application, which uses that information to make more informed optimization decisions.
+
+It's beyond the scope of this course, but good to know about in case you want to explore later.
+
 L2: Integrating pprof
+Integrating pprof
+The first step toward profiling is integrating pprof and exposing its data. The runtime/pprof package gathers performance data from the Go runtime as your code runs, and writes it in a format we can use.
+
+The package exposes a number of functions for profiling, but the good news is that you can ignore most of them.
+
+While we rely on the package to do the nitty-gritty of runtime profiling, we rarely need to interact directly with it – it's mostly automatic!
+
+Exposing pprof Data
+There are a few different ways to expose pprof's data, but for a web app, we'll use the net/http/pprof package. This package does two things for us:
+
+It activates pprof profiling so we don't need to interact directly with runtime/pprof.
+It gives us some ready-made HTTP handlers that we can mount using our existing ServeMux.
+As a bonus, this package automatically registers its default handlers with the default ServeMux simply by importing it.
+
+package main
+
+import (
+	"log"
+	"net/http"
+	_ "net/http/pprof"
+)
+
+func main() {
+	log.Println(http.ListenAndServe("localhost:6060", nil))
+}
+
+This program starts an HTTP server on port 6060, using the default ServeMux, which exposes the default pprof endpoints:
+
+http://localhost:6060/debug/pprof/goroutine
+http://localhost:6060/debug/pprof/heap
+http://localhost:6060/debug/pprof/allocs
+http://localhost:6060/debug/pprof/threadcreate
+http://localhost:6060/debug/pprof/block
+http://localhost:6060/debug/pprof/mutex
+http://localhost:6060/debug/pprof/cmdline
+http://localhost:6060/debug/pprof/profile
+http://localhost:6060/debug/pprof/symbol
+http://localhost:6060/debug/pprof/trace
+Using the default ServeMux isn't ideal in a real application, so we should explicitly register the handlers we know we want, where we want them. This is also easily accomplished:
+
+import "net/http/pprof"
+
+mux := http.NewServeMux()
+
+/* register all your normal handlers */
+
+mux.HandleFunc("GET /debug/pprof/", pprof.Index)
+mux.HandleFunc("GET /debug/pprof/profile", pprof.Profile)
+
+pprof.Index handles most endpoints (heap, goroutine, allocs, etc.), but a few – like pprof.Profile for CPU profiling – need their own handler registration.
+
+By mounting the pprof handlers explicitly we have full control, for example, we might want them behind authentication middleware so that only admins can access them:
+
+mux.Handle("GET /debug/pprof/", s.authMiddleware(http.HandlerFunc(pprof.Index)))
+mux.Handle("GET /debug/pprof/profile", s.authMiddleware(http.HandlerFunc(pprof.Profile)))
+
+Many teams only mount these handlers in development (or behind strict auth in production), since profiling endpoints can expose sensitive internal details:
+
+if os.Getenv("ENVIRONMENT") == "development" {
+	mux.Handle("GET /debug/pprof/", s.authMiddleware(http.HandlerFunc(pprof.Index)))
+	mux.Handle("GET /debug/pprof/profile", s.authMiddleware(http.HandlerFunc(pprof.Profile)))
+}
+
+Assignment
+Import net/http/pprof and register pprof.Index as the handler for GET /debug/pprof/.
+Register pprof.Profile as the handler for GET /debug/pprof/profile.
+Wrap both pprof routes with your Auth middleware so only authenticated users can access them.
+Restart your server:
+go run .
+
+Run and submit the CLI tests from the root of the Linko repo.
+
 L3: CPU Profiling
 L4: CPU Profiling Quiz
 L5: Memory Profiling
