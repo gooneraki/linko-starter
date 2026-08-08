@@ -3476,4 +3476,50 @@ If you fix your tracing code after a failed attempt, create a new shortlink agai
 Run and submit the CLI tests from the root of the Linko repo.
 
 L6: Reading Traces
+
+Reading Traces
+Let's take a closer look at a full trace in Jaeger. This is my "create shortlink" trace:
+
+tracing in jaeger
+
+You should have seen something similar in the last lesson. Notice a few things:
+
+The auth.validate_password span takes a long time. That makes sense; it's checking a password hash.
+The handler.shorten_link span is the actual business logic of the request
+The http.verify_destination child span is taking almost all of the time of the handler.shorten_link span.
+This check was added with good intentions – who wants to redirect users to a broken link? – but it runs on every shortlink creation request and, aside from auth, is the hottest path in the application.
+
+It tells us something simple: checking the destination URL is by far the most expensive part of the "create shortlink" operation: much slower than actually saving the link to disk.
+
+We use OpenTelemetry + Google's Cloud Trace on Boot.dev. One of our favorite dashboards shows the slowest median traces by HTTP handler across our entire app. It helped us find out that our "boss fight" xp calculations were slowing down lesson submissions... even when a boss fight wasn't active!
+
 L7: Distributed Tracing
+
+Distributed Tracing
+Most applications aren't as simple as Linko. If you ever work in an environment with multiple services, you'll often want to trace a request across different backend services.
+
+Fortunately, OpenTelemetry is prepared!
+
+Context Propagation and Trace Context
+When tracing a request across services, we need to tie one service's outbound call to another service's inbound request. This is usually done by propagating trace context in HTTP request headers (for example, W3C traceparent/tracestate).
+
+In Go code, OpenTelemetry stores that trace context in context.Context values after extracting it from inbound requests.
+
+Trace Propagation in Go
+You're already using context-aware span creation in Linko!
+
+ctx, span := tracer.Start(r.Context(), "handleRequest")
+
+The r.Context() already contains all the trace context – whether created earlier in the same service, or extracted from an incoming request – the span automatically becomes a child of the appropriate parent span.
+
+If your handler makes an outbound HTTP request, use the OpenTelemetry HTTP client wrapper and pass the active request context. Then trace context will be automatically injected into outbound request headers:
+
+client := http.Client{
+	Transport: otelhttp.NewTransport(http.DefaultTransport),
+}
+req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://other-service/endpoint", nil)
+if err != nil {
+	return err
+}
+resp, err := client.Do(req)
+// ...
