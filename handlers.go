@@ -26,15 +26,21 @@ var (
 var indexPage string
 
 func (s *server) handlerIndex(w http.ResponseWriter, r *http.Request) {
+	_, span := tracer.Start(r.Context(), "handler.index")
+	defer span.End()
 	w.Header().Set("Content-Type", "text/html")
 	io.WriteString(w, indexPage)
 }
 
 func (s *server) handlerLogin(w http.ResponseWriter, r *http.Request) {
+	_, span := tracer.Start(r.Context(), "handler.login")
+	defer span.End()
 	w.WriteHeader(http.StatusOK)
 }
 
 func (s *server) handlerShortenLink(w http.ResponseWriter, r *http.Request) {
+	_, span := tracer.Start(r.Context(), "handler.shorten_link")
+	defer span.End()
 	user, ok := r.Context().Value(UserContextKey).(string)
 	if !ok || user == "" {
 		httpError(r.Context(), w, http.StatusUnauthorized, errors.New("unauthorized"))
@@ -50,7 +56,7 @@ func (s *server) handlerShortenLink(w http.ResponseWriter, r *http.Request) {
 		httpError(r.Context(), w, http.StatusBadRequest, errors.New("invalid URL: must include scheme (http/https) and host"))
 		return
 	}
-	if err := checkDestination(longURL); err != nil {
+	if err := checkDestination(longURL, r); err != nil {
 		s.logger.Info("invalid target URL", slog.Any("error", err))
 		httpError(r.Context(), w, http.StatusBadRequest, errors.New("invalid target url: "+err.Error()))
 		return
@@ -67,6 +73,8 @@ func (s *server) handlerShortenLink(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handlerRedirect(w http.ResponseWriter, r *http.Request) {
+	_, span := tracer.Start(r.Context(), "handler.redirect")
+	defer span.End()
 	longURL, err := s.store.Lookup(r.Context(), r.PathValue("shortCode"))
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -78,7 +86,7 @@ func (s *server) handlerRedirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = bcrypt.GenerateFromPassword([]byte(longURL), bcrypt.DefaultCost)
-	if err := checkDestination(longURL); err != nil {
+	if err := checkDestination(longURL, r); err != nil {
 		httpError(r.Context(), w, http.StatusBadGateway, errors.New("destination unavailable"))
 		return
 	}
@@ -91,6 +99,8 @@ func (s *server) handlerRedirect(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handlerListURLs(w http.ResponseWriter, r *http.Request) {
+	_, span := tracer.Start(r.Context(), "handler.list_urls")
+	defer span.End()
 	codes, err := s.store.List(r.Context())
 	if err != nil {
 		s.logger.Info("failed to list URLs", slog.Any("error", err))
@@ -102,7 +112,9 @@ func (s *server) handlerListURLs(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(codes)
 }
 
-func (s *server) handlerStats(w http.ResponseWriter, _ *http.Request) {
+func (s *server) handlerStats(w http.ResponseWriter, r *http.Request) {
+	_, span := tracer.Start(r.Context(), "handler.stats")
+	defer span.End()
 	redirectsMu.Lock()
 	snapshot := redirects
 	redirectsMu.Unlock()

@@ -3403,5 +3403,77 @@ In the Jaeger UI, click "Search" -> "Service" -> "unknown_service:linko" -> "Fin
 Run and submit the CLI tests from the root of the Linko repo.
 
 L5: Adding Spans
+
+Adding Spans
+We now technically have tracing in our application, as you proved by viewing traces in Jaeger. But they're not very useful traces yet. Each trace only has a single span. All this really tells us is how many HTTP requests we're getting, and how long each one takes.
+
+Traces really start to shine when they expose multiple, nested spans. You're responsible for deciding when and where to add spans, but they generally belong around any "interesting" operations.
+
+Span Fatigue
+We could add a span for each function call, but this quickly becomes both tedious and noisy. Imagine a span for our logging middleware. It would add a new child span to every request that mirrors the current root span in virtually every way – it would just be a few ms shorter. Not useful!
+
+Trace Interesting Things
+I like to add a span for each handler. We only have a few of those in this application, so it's not a big chore. And it starts to give us useful information. We can see how each handler behaves in the real world:
+
+First, we need a tracer. A tracer is a lightweight object that creates spans. A simple option is to use a package-level variable and initialize it in your initTracing function.
+
+You'll need to add the "go.opentelemetry.io/otel/trace" import to your tracing.go file:
+
+import "go.opentelemetry.io/otel/trace"
+
+var tracer trace.Tracer
+
+func initTracing(ctx context.Context) (func(context.Context) error, error) {
+	// ... existing setup ...
+	otel.SetTracerProvider(tp)
+	tracer = tp.Tracer("example.com/myservice") // this is added
+	return tp.Shutdown, nil
+}
+
+The string "example.com/myservice" is a scope name – it groups spans by source. A single scope name per service is typical, though larger applications might use separate tracers for different components (e.g. "boot.dev/linko/handlers" or "boot.dev/linko/store").
+
+With the tracer in place, adding a span to a handler is straightforward:
+
+func quoteHandler(w http.ResponseWriter, r *http.Request) {
+	ctx, span := tracer.Start(r.Context(), "calculate_quote")
+	defer span.End()
+
+	// do work with ctx...
+}
+
+This little piece of boilerplate code will be repeated all over your codebase, so it's good to understand exactly what it does.
+
+ctx, span := tracer.Start(r.Context(), "calculate_quote")
+
+The tracer.Start method starts a new span, which contains three things:
+
+The scope name already defined in the tracer object
+The span name (the method's second argument).
+The request context – this is how the span is tied to its parent span(s), and ultimately how the span tree is built. The parent span is injected into the request's context by the otelhttp.NewHandler middleware we set up in the last section.
+defer span.End()
+
+This is where the span is ended. You will typically defer this function immediately after calling tracer.Start().
+
+When span.End() is called, the elapsed time between tracer.Start() and span.End() calls is calculated, and the span is "closed".
+
+When the root span finally closes (in this example, that means when the otelhttp.NewHandler middleware returns, and the request is served), that signals that the trace is complete!
+
+Assignment
+Add a package-level tracer variable and initialize it in initTracing using the scope name "boot.dev/linko".
+Add a child span to each of your HTTP handlers using tracer.Start and defer span.End(). Use the returned ctx for downstream calls, and use the following naming convention:
+handlerIndex = "handler.index"
+handlerLogin = "handler.login"
+handlerShortenLink = "handler.shorten_link"
+etc.
+Add a child span for validatePassword called "auth.validate_password".
+Add a child span for checkDestination called "http.verify_destination".
+Restart Linko:
+OTEL_EXPORTER_OTLP_TRACES_INSECURE=true OTEL_SERVICE_NAME=linko go run .
+
+Within Linko, log in with an existing Basic Auth user, then create a new shortlink for http://www.example.com. If you need the accepted users, check auth.go.
+In the Jaeger UI click "Find Traces" again and find the trace for your request (it should have a longer duration than most) and click on it. You should see the trace broken down into the child spans you added!
+If you fix your tracing code after a failed attempt, create a new shortlink again before re-running the tests so Jaeger has a fresh trace with your new spans.
+Run and submit the CLI tests from the root of the Linko repo.
+
 L6: Reading Traces
 L7: Distributed Tracing
